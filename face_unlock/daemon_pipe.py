@@ -37,26 +37,34 @@ while True:
         _, data = win32file.ReadFile(pipe, 65536)
         req = data.decode("utf-8", "ignore").strip()
         user = req.split(" ", 1)[1] if req.startswith("VERIFY") else os.getlogin()
-        print(f"verify {user}...", flush=True)
+        import time as _t
+        log(f"{_t.strftime('%H:%M:%S')} verify {user}...")
         cam.open()
         for _ in range(5):
             cam.read()
         scores = []
+        frames_ok = 0
+        faces_seen = 0
+        means = []
         for _ in range(5):
             ok, f = cam.read()
             if not ok:
                 continue
+            frames_ok += 1
+            means.append(round(float(f.mean()), 1))
             h, w = f.shape[:2]
             if w > 640:
                 f = cv2.resize(f, (640, int(h * 640 / w)))
             emb, face = engine.embed(f)
+            if face is not None:
+                faces_seen += 1
             if emb is None:
                 continue
             scores.append(gallery.best(user, emb))
         cam.close()
         good = bool(scores) and vote(scores, 0.35, 2)
         best = max(scores) if scores else 0.0
-        print(f"scores {[round(s, 2) for s in scores]} -> {'OK' if good else 'FAIL'}", flush=True)
+        log(f"frames={frames_ok} faces={faces_seen} means={means} scores={[round(s, 2) for s in scores]} best={round(best, 2)} -> {'OK' if good else 'FAIL'}")
         win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
     except Exception as e:
         print(f"pipe error: {e}", flush=True)
