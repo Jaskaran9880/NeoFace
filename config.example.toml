@@ -1,0 +1,39 @@
+[camera]
+index = 0
+width = 1280
+height = 720
+
+[hotkey]
+key = "F"
+wait_timeout_s = 20
+scan_timeout_s = 10
+
+[match]
+cosine_threshold = 0.42
+frames = 5
+required = 3
+yaw_limit = 25
+pitch_limit = 20
+
+[engine]
+device = "auto"
+det_size = 320
+backend = "fast"
+fast_threshold = 0.35
+accurate_threshold = 0.42
+
+[antispoof]
+enabled = true
+minifasnet_threshold = 0.7
+
+[presence]
+enabled = false
+interval_s = 45
+absent_strikes = 2
+mode = "detection"
+skip_fullscreen = true
+skip_remote = true
+
+[paths]
+pipe = "\\\\.\\pipe\\NeoFace"
+gallery = "%PROGRAMDATA%\\NeoFace\\faces.dat"

@@ -1,0 +1,3 @@
+Models download on first run - do not commit weights here.
+Fast (default): python tools/fetch_fast.py  (~37MB YuNet + SFace)
+Accurate (optional): python tools/fetch_models.py  (~340MB buffalo_l)
