@@ -1,69 +1,128 @@
 # NeoFace Unlock
 
-Face unlock for my Predator Helios Neo 16 (Win 11, no IR cam). Normal 1080p webcam only.
+Open-source face unlock for Windows 10/11 laptops with a regular RGB webcam (no IR camera needed).
 
-I got tired of typing PIN every time I lock with Win+L, and Windows Hello needs an IR camera which this laptop doesn't have. So I'm building my own - hotkey gated, waits for you to look in, then unlocks.
-
-## v1 scope
-
-Enroll (photo/video/live) + console test + `test_unlock.py` simulation + vault. Walk-away auto-lock moved to v2.
+Built for my Predator Helios Neo 16 (i7-13700HX, RTX 4050, Win 11). Uses a normal 1080p webcam + AI face recognition to unlock via the Windows lock screen tile.
 
 ## How it works
 
 ```
-Win+L -> tile says Press [F] -> camera wakes -> Look here prompt
-  -> guiding (closer / straight / light) -> Scanning ring
-  -> match -> desktop
+Win+L lock screen
+  -> NeoFace tile appears (C++ Credential Provider DLL)
+  -> Look at camera, click "Unlock with face"
+  -> Daemon scans face (YuNet detection + SFace recognition, 0.06s/frame)
+  -> Match found -> desktop unlocked
+  -> No match -> "Face not recognized" -> use PIN
 ```
 
-## v2 roadmap
+## Requirements
 
-- Walk-away daemon (YuNet, 45s tick, always-on AC+battery)
-- Lock-screen CP tile auto-register
+- Windows 10/11
+- Python 3.10+
+- Any RGB webcam (USB or built-in)
+- VS2022 Build Tools (for building the C++ DLL)
 
-## Stack
-
-- Recognition: InsightFace buffalo_l (SCRFD det_10g + ArcFace w600k_r50, 512-d)
-- Anti-spoof: Silent-Face MiniFASNet v2 (passive only for v1)
-- Presence: YuNet lightweight detector
-- Service: Python LocalSystem service + named pipe
-- Lock tile: C++ Credential Provider (thin shim)
-- Console: PySide6 + QML FaceID-style ring (redrawn by me)
-- Password vault: LSA Secret, gallery DPAPI-machine, vectors only
-
-## Status
-
-v0.1 skeleton. Enrollment + test works in console. CP tile registers but treat as beta - keep PIN enabled.
-
-See `docs/FLOW.md` for full hotkey flow, `docs/SECURITY.md` for limits.
-
-## Quick start
+## Quick install
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# 1. Clone
+git clone https://github.com/Jaskaran9880/windows-face-unlock.git
+cd windows-face-unlock
+
+# 2. Install (run as Admin for full setup)
+.\install\install.ps1
+```
+
+## Manual install
+
+```powershell
+# 1. Clone and install dependencies
+git clone https://github.com/Jaskaran9880/windows-face-unlock.git
+cd windows-face-unlock
 pip install -r requirements.txt
+
+# 2. Download face detection/recognition models
 python tools\fetch_fast.py
+
+# 3. Add your face photos
+#    Place front-facing photos (JPG/PNG/HEIC) in the photos\ folder
+
+# 4. Enroll your face
 python tools\enroll_fast.py
+
+# 5. Set up password vault (one-time, your Windows password)
+python tools\set_password_machine.py
+
+# 6. Build and register the lock screen tile (Admin)
+cd cp
+.\build_cp.ps1
+.\register_cp.ps1
+cd ..
+
+# 7. Install daemon service (Admin)
+.\installer\install_daemon.ps1
+
+# 8. Test
 python tools\test_unlock.py
 ```
 
-## Performance (open-source friendly)
+## Usage
 
-Two backends, auto-picked:
+1. Log in with PIN once (daemon starts automatically at logon)
+2. Press **Win+L** to lock
+3. Look at the camera
+4. Click **"Unlock with face"** on the NeoFace tile
+5. Unlocked!
 
-- `fast` default: YuNet + SFace (OpenCV Zoo) - ~0.06s/frame CPU, 128-d, runs on any i3 laptop, no GPU needed. Threshold 0.35.
-- `accurate` optional: InsightFace buffalo_l - ~2.6s/frame CPU, ~0.15s on RTX 4050 CUDA, 512-d. Threshold 0.42.
+## Architecture
 
-Unlock test: `python tools/test_unlock.py`. Enroll fast gallery: `python tools/enroll_fast.py`.
+```
+C:\NeoFace\
+  face_unlock/
+    daemon_pipe.py      - Named pipe daemon (runs as pythonw, hidden)
+    fast.py             - YuNet + SFace engine (0.06s/frame, 128-d)
+    engine.py           - InsightFace buffalo_l (optional, 512-d)
+    store.py            - DPAPI encrypted face gallery
+    matcher.py          - Cosine similarity scoring
+    camera.py           - DSHOW camera with MJPG codec
+  cp/
+    dllmain.cpp         - C++ DLL entry + COM factory
+    provider.cpp        - Credential Provider (tile UI)
+    credential.cpp      - Tile logic + pipe communication
+    kerb.cpp            - Kerberos unlock packager
+  tools/
+    enroll_fast.py      - Enroll from photos + video
+    test_unlock.py      - Test face scan
+    set_password_machine.py - Store Windows password (DPAPI)
+  photos/               - Your face photos (for enrollment)
+  models/
+    yunet.onnx          - Face detection (232KB)
+    sface.onnx          - Face recognition (37MB)
+```
 
-## Real Windows unlock status (v1)
+## Performance
 
-- DONE: fast enroll (photo/video/live), `test_unlock.py` unlock simulation, DPAPI vault (`tools/set_password.py`)
-- V2: walk-away auto-lock daemon + lock-screen CP tile. Steps then:
-  1. Run PowerShell as admin, create restore point
-  2. Keep PIN enabled (built-in Administrator stays OFF for security)
-  3. `python tools/set_password.py`
-  4. CP DLL in `cp/` - build with VS2022, `regsvr32`, test with Win+L + hotkey F
+| Backend | Speed | Dimensions | Accuracy | GPU needed |
+|---------|-------|------------|----------|------------|
+| **fast** (default) | 0.06s/frame | 128-d | Good (0.54-0.73) | No |
+| accurate (optional) | 2.6s/frame | 512-d | Best | Optional |
 
-Tested on: Predator Helios Neo 16, i7-13700HX, RTX 4050, Win 11 23H2.
+## Technical details
+
+- **Detection**: YuNet (OpenCV DNN, CPU-optimized)
+- **Recognition**: SFace (OpenCV FaceRecognizerSF)
+- **Gallery**: Variable-length vectors, NF02 format, DPAPI encrypted
+- **Pipe protocol**: Message-mode named pipe (`\\.\pipe\NeoFace`)
+- **Lock screen tile**: C++ Credential Provider (registered via COM + regsvr32)
+- **Daemon**: Python scheduled task, Interactive logon type
+
+## Known limitations
+
+- Camera requires user session (Windows blocks SYSTEM access at login screen)
+- Face scan runs after PIN login (not at cold-boot login screen)
+- Keep PIN enabled as backup
+- No anti-spoofing in v1 (passive liveness deferred to v2)
+
+## License
+
+MIT
