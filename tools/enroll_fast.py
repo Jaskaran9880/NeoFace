@@ -22,7 +22,7 @@ def load_image(p):
     import numpy as np
     return cv2.cvtColor(np.array(Image.open(p).convert("RGB")), cv2.COLOR_RGB2BGR)
 
-base = r"A:\Face Unlock For mypc\photos"
+base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "photos")
 vids = [r"C:\Users\perve\Downloads\Blip Iphone Transfer\IMG_0894.MOV"]
 saved = 0
 if os.path.isdir(base):
