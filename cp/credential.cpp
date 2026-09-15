@@ -46,6 +46,20 @@ HRESULT NeoFaceCredential::GetSubmitButtonValue(DWORD id, DWORD *adjacent) {
     return S_OK;
 }
 
+static void CpLog(const char *msg) {
+    HANDLE h = CreateFileW(L"C:\\ProgramData\\NeoFace\\cp.log", GENERIC_WRITE,
+        FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    SetFilePointer(h, 0, NULL, FILE_END);
+    char buf[256];
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wsprintfA(buf, "%02d:%02d:%02d %s\r\n", st.wHour, st.wMinute, st.wSecond, msg);
+    DWORD wr = 0;
+    WriteFile(h, buf, (DWORD)strlen(buf), &wr, NULL);
+    CloseHandle(h);
+}
+
 static bool ReadMachineCred(wchar_t *domain, int dcap, wchar_t *user, int ucap, wchar_t *pass, int pcap) {
     HANDLE h = CreateFileW(L"C:\\ProgramData\\NeoFace\\cred.bin", GENERIC_READ,
         FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -78,19 +92,59 @@ static bool ReadMachineCred(wchar_t *domain, int dcap, wchar_t *user, int ucap, 
 }
 
 static bool PipeVerify(const wchar_t *user) {
-    if (!WaitNamedPipeW(L"\\\\.\\pipe\\NeoFace", 15000)) return false;
-    HANDLE h = CreateFileW(L"\\\\.\\pipe\\NeoFace", GENERIC_READ | GENERIC_WRITE,
-        0, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) return false;
     char req[256];
     char ubuf[128];
     WideCharToMultiByte(CP_UTF8, 0, user, -1, ubuf, 128, NULL, NULL);
     wsprintfA(req, "VERIFY %s", ubuf);
+
+    HANDLE h = INVALID_HANDLE_VALUE;
+    for (int i = 0; i < 5; i++) {
+        h = CreateFileW(L"\\\\.\\pipe\\NeoFace", GENERIC_READ | GENERIC_WRITE,
+            0, NULL, OPEN_EXISTING, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) break;
+        CpLog("pipe retry");
+        Sleep(2000);
+    }
+    if (h == INVALID_HANDLE_VALUE) { CpLog("pipe open FAIL"); return false; }
+
+    DWORD mode = PIPE_READMODE_MESSAGE;
+    SetNamedPipeHandleState(h, &mode, NULL, NULL);
+
+    DWORD wr = 0;
+    if (!WriteFile(h, req, (DWORD)strlen(req) + 1, &wr, NULL)) {
+        CpLog("pipe write FAIL");
+        CloseHandle(h);
+        return false;
+    }
+    CpLog("pipe sent VERIFY");
+
+    OVERLAPPED ov = { 0 };
+    ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     char resp[16] = { 0 };
-    DWORD wr = 0, rr = 0;
-    BOOL ok = TransactNamedPipe(h, req, (DWORD)strlen(req) + 1, resp, 15, &rr, NULL);
+    DWORD rr = 0;
+    BOOL reading = ReadFile(h, resp, 15, &rr, &ov);
+    if (!reading) {
+        DWORD err = GetLastError();
+        if (err == ERROR_IO_PENDING) {
+            DWORD w = WaitForSingleObject(ov.hEvent, 30000);
+            if (w == WAIT_OBJECT_0) {
+                GetOverlappedResult(h, &ov, &rr, FALSE);
+                reading = TRUE;
+            } else {
+                CancelIo(h);
+                CpLog("pipe read TIMEOUT");
+            }
+        } else {
+            CpLog("pipe read ERR");
+        }
+    }
+    CloseHandle(ov.hEvent);
     CloseHandle(h);
-    return ok && rr >= 2 && resp[0] == 'O' && resp[1] == 'K';
+
+    char dbg[64];
+    wsprintfA(dbg, "pipe read %s rr=%d r0=%d r1=%d", reading ? "OK" : "FAIL", rr, resp[0], resp[1]);
+    CpLog(dbg);
+    return reading && rr >= 2 && resp[0] == 'O' && resp[1] == 'K';
 }
 
 HRESULT NeoFaceCredential::GetSerialization(
@@ -99,20 +153,25 @@ HRESULT NeoFaceCredential::GetSerialization(
     LPWSTR *status, CREDENTIAL_PROVIDER_STATUS_ICON *icon) {
     *icon = CPSI_NONE;
     *status = NULL;
+    CpLog("GetSerialization enter");
     wchar_t domain[64] = { 0 }, user[128] = { 0 }, pass[256] = { 0 };
     if (!ReadMachineCred(domain, 64, user, 128, pass, 256)) {
+        CpLog("cred read FAIL");
         SHStrDupW(L"NeoFace not set up - run set_password_machine (admin) first", status);
         *icon = CPSI_ERROR;
         *resp = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
         return S_OK;
     }
+    CpLog("cred read OK");
     if (!PipeVerify(user)) {
+        CpLog("pipe verify FAIL");
         SHStrDupW(L"Face not recognized - try again or use PIN", status);
         *icon = CPSI_WARNING;
         *resp = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
         SecureZeroMemory(pass, sizeof(pass));
         return S_OK;
     }
+    CpLog("pipe verify OK");
     ULONG pkg = 0;
     HRESULT hr = NeoGetAuthPackage(&pkg);
     BYTE *rgb = NULL;
@@ -120,11 +179,13 @@ HRESULT NeoFaceCredential::GetSerialization(
     if (SUCCEEDED(hr)) hr = NeoPackUnlockLogon(domain, user, pass, _cpus, &rgb, &cb);
     SecureZeroMemory(pass, sizeof(pass));
     if (FAILED(hr)) {
+        CpLog("kerb pack FAIL");
         SHStrDupW(L"NeoFace logon packaging failed - use PIN", status);
         *icon = CPSI_ERROR;
         *resp = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
         return S_OK;
     }
+    CpLog("returning credential");
     serial->ulAuthenticationPackage = pkg;
     serial->cbSerialization = cb;
     serial->rgbSerialization = rgb;
