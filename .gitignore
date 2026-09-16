@@ -4,6 +4,7 @@ __pycache__/
 data/
 models/*
 !models/.gitkeep
+!models/README.txt
 dist/
 build/
 *.log
