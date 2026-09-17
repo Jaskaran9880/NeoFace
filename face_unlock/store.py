@@ -49,7 +49,10 @@ class Gallery:
         with open(self.path, "rb") as f:
             blob = f.read()
         if _HAS_DPAPI:
-            _, blob = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
+            try:
+                _, blob = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
+            except Exception as e:
+                raise ValueError(f"Failed to decrypt gallery: {e}")
         if blob[:4] == b"NF01":
             off = 4
             nusers = struct.unpack_from("<I", blob, off)[0]
@@ -69,7 +72,8 @@ class Gallery:
                     embs.append(e)
                 self.templates[user] = embs
             return
-        assert blob[:4] == MAGIC
+        if blob[:4] != MAGIC:
+            raise ValueError(f"Invalid gallery format: expected {MAGIC!r}, got {blob[:4]!r}")
         off = 4
         nusers = struct.unpack_from("<I", blob, off)[0]
         off += 4
