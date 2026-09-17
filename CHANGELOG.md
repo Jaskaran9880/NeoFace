@@ -11,7 +11,7 @@
 - One-click install/uninstall scripts
 - Updated README with full setup guide
 - Added deploy_all.ps1 for full deployment
-- Project moved to C:\NeoFace
+- Dashboard added with web-based management UI
 
 ## 0.2.0 - 2026-09-15
 - Named pipe daemon with camera + face recognition
