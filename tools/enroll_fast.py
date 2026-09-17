@@ -6,7 +6,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from face_unlock.fast import FastEngine
 from face_unlock.store import Gallery
 
-user = os.getlogin()
+try:
+    user = os.getlogin()
+except OSError:
+    user = os.environ.get("USERNAME", "default")
 engine = FastEngine()
 engine.load()
 gallery = Gallery(r"C:\ProgramData\NeoFace\faces_fast.dat")
@@ -23,7 +26,7 @@ def load_image(p):
     return cv2.cvtColor(np.array(Image.open(p).convert("RGB")), cv2.COLOR_RGB2BGR)
 
 base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "photos")
-vids = [r"C:\Users\perve\Downloads\Blip Iphone Transfer\IMG_0894.MOV"]
+vids = []
 saved = 0
 if os.path.isdir(base):
     for n in os.listdir(base):
