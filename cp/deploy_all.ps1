@@ -1,4 +1,6 @@
 $ErrorActionPreference = "Stop"
+$ROOT = Split-Path -Parent $PSScriptRoot
+if (!$ROOT) { $ROOT = Get-Location }
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (!$isAdmin) { throw "Run this in Terminal (Admin). Right-click Start > Terminal (Admin)." }
 
@@ -11,7 +13,7 @@ Unregister-ScheduledTask -TaskName "NeoFace-Daemon" -Confirm:$false -ErrorAction
 
 # 2. Deploy DLL
 Write-Host "[2/4] Deploying DLL..."
-$src = "C:\NeoFace\cp\FaceUnlockCP.dll"
+$src = Join-Path $ROOT "cp\FaceUnlockCP.dll"
 $dstDir = "C:\Program Files\NeoFace"
 New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
 Copy-Item $src "$dstDir\FaceUnlockCP.dll" -Force
@@ -23,7 +25,7 @@ Write-Host "  DLL deployed and registered" -ForegroundColor Green
 # 3. Install daemon scheduled task (interactive, not Session 0)
 Write-Host "[3/4] Installing daemon task..."
 $pyw = Join-Path (Split-Path (Get-Command python).Source) "pythonw.exe"
-$script = "C:\NeoFace\face_unlock\daemon_pipe.py"
+$script = Join-Path $ROOT "face_unlock\daemon_pipe.py"
 $act = New-ScheduledTaskAction -Execute $pyw -Argument "`"$script`""
 $trig = New-ScheduledTaskTrigger -AtLogOn
 $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Hours 0)
@@ -35,8 +37,8 @@ Write-Host "  Daemon task installed (Interactive logon, not Session 0)" -Foregro
 Write-Host "[4/4] Starting daemon..."
 Start-ScheduledTask -TaskName "NeoFace-Daemon"
 Start-Sleep 15
-$log = Get-Content "C:\ProgramData\NeoFace\daemon.log" -ErrorAction SilentlyContinue | Select-Object -Last 3
+$log = Get-Content (Join-Path $env:PROGRAMDATA "NeoFace\daemon.log") -ErrorAction SilentlyContinue | Select-Object -Last 3
 if ($log) { $log | ForEach-Object { Write-Host "  $_" } }
 Write-Host "`n=== Deploy Complete ===" -ForegroundColor Cyan
 Write-Host "Test: press Win+L, look at camera, click 'Unlock with face'"
-Write-Host "Or run: python C:\NeoFace\tools\probe_system.py"
+Write-Host "Or run: python $ROOT\tools\probe_system.py"
