@@ -22,3 +22,7 @@ cp/*.lib
 cp/*.exp
 cp/*.dll
 .vs/
+.env
+*.swp
+*.swo
+~$*
