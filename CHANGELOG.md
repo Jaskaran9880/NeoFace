@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 - 2026-09-17
+- Web dashboard with liquid glass dark UI (Flask + Tailwind)
+- Photo management with HEIC thumbnail previews
+- Component diagnostics and live face test
+- Security: fixed path traversal in photo upload/delete
+- Removed hardcoded personal paths from tools
+- Fixed DPAPI error handling in gallery store
+- Fixed inconsistent matcher defaults
+- Added troubleshooting docs
+
 ## 0.3.0 - 2026-09-16
 - Speed optimization: 7-8s → 3.5s per unlock
 - Threaded camera reads (read next frame while processing)
