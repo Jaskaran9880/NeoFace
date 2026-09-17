@@ -20,7 +20,7 @@ pip install -r "$ROOT\requirements.txt" --quiet 2>&1 | Out-Null
 Write-Host "  Dependencies installed" -ForegroundColor Green
 
 # --- Step 3: Download models ---
-Write-Host "`n"[3/7] Checking models..." -ForegroundColor Yellow
+Write-Host "`n[3/7] Checking models..." -ForegroundColor Yellow
 if (!(Test-Path "$ROOT\models\yunet.onnx") -or !(Test-Path "$ROOT\models\sface.onnx")) {
     Write-Host "  Downloading YuNet + SFace models..." -ForegroundColor Gray
     python "$ROOT\tools\fetch_fast.py"
