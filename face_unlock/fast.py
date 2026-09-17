@@ -24,9 +24,3 @@ class FastEngine:
         aligned = self.rec.alignCrop(frame, f)
         emb = self.rec.feature(aligned)
         return emb.flatten(), f
-
-    @staticmethod
-    def score(a, b):
-        a = a / (np.linalg.norm(a) + 1e-9)
-        b = b / (np.linalg.norm(b) + 1e-9)
-        return float(np.dot(a, b))
