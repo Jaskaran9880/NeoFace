@@ -85,33 +85,37 @@ class Cam:
 
 cam = Cam()
 
-import time as _t
-log(f"{_t.strftime('%H:%M:%S')} creating pipe {PIPE}")
+log(f"{time.strftime('%H:%M:%S')} creating pipe {PIPE}")
 
 try:
     pipe = win32pipe.CreateNamedPipe(PIPE,
         win32pipe.PIPE_ACCESS_DUPLEX,
         win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
         1, 65536, 65536, 0, None)
-    log(f"{_t.strftime('%H:%M:%S')} pipe created handle={pipe}")
+    log(f"{time.strftime('%H:%M:%S')} pipe created handle={pipe}")
 except Exception as e:
     log(f"FATAL: CreateNamedPipe failed: {e}")
     sys.exit(1)
 
-log(f"{_t.strftime('%H:%M:%S')} listening")
+log(f"{time.strftime('%H:%M:%S')} listening")
 while True:
     try:
-        log(f"{_t.strftime('%H:%M:%S')} waiting for client...")
+        log(f"{time.strftime('%H:%M:%S')} waiting for client...")
         win32pipe.ConnectNamedPipe(pipe, None)
-        log(f"{_t.strftime('%H:%M:%S')} client connected")
+        log(f"{time.strftime('%H:%M:%S')} client connected")
         _, data = win32file.ReadFile(pipe, 65536)
-        log(f"{_t.strftime('%H:%M:%S')} read {data!r}")
+        log(f"{time.strftime('%H:%M:%S')} read {data!r}")
         req = data.decode("utf-8", "ignore").strip().rstrip("\x00")
-        user = req.split(" ", 1)[1].strip().rstrip("\x00") if req.startswith("VERIFY") else "perve"
+        user = req.split(" ", 1)[1].strip().rstrip("\x00") if req.startswith("VERIFY") and " " in req else None
+        if not user:
+            log(f"{time.strftime('%H:%M:%S')} invalid request: {req!r}")
+            win32file.WriteFile(pipe, b"FAIL")
+            win32pipe.DisconnectNamedPipe(pipe)
+            continue
 
-        t0 = _t.time()
+        t0 = time.time()
         cam.open()
-        t1 = _t.time()
+        t1 = time.time()
         scores = []
         frames_ok = 0
         faces_seen = 0
@@ -132,17 +136,17 @@ while True:
             if cands:
                 scores.append(max(cosine_score(emb, c) for c in cands))
         cam.close()
-        t_scan = _t.time() - t1
+        t_scan = time.time() - t1
 
         good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
         best = max(scores) if scores else 0.0
-        total = _t.time() - t0
-        log(f"{_t.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
+        total = time.time() - t0
+        log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
         win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
         win32pipe.DisconnectNamedPipe(pipe)
-        log(f"{_t.strftime('%H:%M:%S')} disconnected, ready for next client")
+        log(f"{time.strftime('%H:%M:%S')} disconnected, ready for next client")
     except Exception as e:
-        log(f"{_t.strftime('%H:%M:%S')} error: {e}")
+        log(f"{time.strftime('%H:%M:%S')} error: {e}")
         try:
             win32pipe.DisconnectNamedPipe(pipe)
         except Exception:
