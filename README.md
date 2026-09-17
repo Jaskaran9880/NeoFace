@@ -26,8 +26,8 @@ Win+L lock screen
 
 ```powershell
 # 1. Clone
-git clone https://github.com/Jaskaran9880/windows-face-unlock.git
-cd windows-face-unlock
+git clone https://github.com/Jaskaran9880/NeoFace.git
+cd NeoFace
 
 # 2. Install (run as Admin for full setup)
 .\install\install.ps1
@@ -37,8 +37,8 @@ cd windows-face-unlock
 
 ```powershell
 # 1. Clone and install dependencies
-git clone https://github.com/Jaskaran9880/windows-face-unlock.git
-cd windows-face-unlock
+git clone https://github.com/Jaskaran9880/NeoFace.git
+cd NeoFace
 pip install -r requirements.txt
 
 # 2. Download face detection/recognition models
@@ -123,6 +123,21 @@ C:\NeoFace\
 - Keep PIN enabled as backup
 - No anti-spoofing in v1 (passive liveness deferred to v2)
 
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| "Camera not available" | Stop the daemon first (`Stop-ScheduledTask -TaskName NeoFace-Daemon`), then try again |
+| "Pipe not available" | Start the daemon: `Start-ScheduledTask -TaskName NeoFace-Daemon` |
+| "Face not recognized" | Re-enroll: `python tools\enroll_fast.py`, ensure good lighting |
+| Camera opens slowly | Normal for DSHOW backend (~2-3s first open), subsequent opens are faster |
+| Daemon not starting | Check `C:\ProgramData\NeoFace\daemon.log` for errors |
+| DLL not showing on lock screen | Re-register: `regsvr32 "C:\Program Files\NeoFace\FaceUnlockCP.dll"` |
+
 ## License
 
 MIT
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and code style guidelines.
