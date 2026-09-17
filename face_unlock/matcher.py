@@ -7,6 +7,6 @@ def cosine_score(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
 
 
-def vote(scores, threshold=0.42, required=3):
+def vote(scores, threshold=0.35, required=2):
     hits = sum(1 for s in scores if s >= threshold)
     return hits >= required
