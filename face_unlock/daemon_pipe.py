@@ -59,8 +59,11 @@ class Cam:
         time.sleep(0.05)
 
     def _grab(self):
-        while self.running and self.cap and self.cap.isOpened():
-            ok, f = self.cap.read()
+        while self.running:
+            cap = self.cap
+            if not cap or not cap.isOpened():
+                break
+            ok, f = cap.read()
             if ok:
                 with self.lock:
                     self.latest = f
@@ -75,13 +78,13 @@ class Cam:
 
     def close(self):
         self.running = False
-        if self._thread:
-            self._thread.join(timeout=1)
-            self._thread = None
         if self.cap:
             self.cap.release()
             self.cap = None
-            self.latest = None
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+        self.latest = None
 
 cam = Cam()
 
@@ -114,39 +117,48 @@ while True:
             continue
 
         t0 = time.time()
-        cam.open()
-        t1 = time.time()
-        scores = []
-        frames_ok = 0
-        faces_seen = 0
-        for _ in range(FRAMES):
-            ok, f = cam.read()
-            if not ok:
-                continue
-            frames_ok += 1
-            h, w = f.shape[:2]
-            if w > IMG_SIZE:
-                f = cv2.resize(f, (IMG_SIZE, int(h * IMG_SIZE / w)))
-            emb, face = engine.embed(f)
-            if face is not None:
-                faces_seen += 1
-            if emb is None:
-                continue
-            cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
-            if cands:
-                scores.append(max(cosine_score(emb, c) for c in cands))
-        cam.close()
-        t_scan = time.time() - t1
+        try:
+            cam.open()
+            t1 = time.time()
+            scores = []
+            frames_ok = 0
+            faces_seen = 0
+            for _ in range(FRAMES):
+                ok, f = cam.read()
+                if not ok:
+                    continue
+                frames_ok += 1
+                h, w = f.shape[:2]
+                if w > IMG_SIZE:
+                    f = cv2.resize(f, (IMG_SIZE, int(h * IMG_SIZE / w)))
+                emb, face = engine.embed(f)
+                if face is not None:
+                    faces_seen += 1
+                if emb is None:
+                    continue
+                cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
+                if cands:
+                    scores.append(max(cosine_score(emb, c) for c in cands))
+            t_scan = time.time() - t1
 
-        good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
-        best = max(scores) if scores else 0.0
-        total = time.time() - t0
-        log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
-        win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
+            good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
+            best = max(scores) if scores else 0.0
+            total = time.time() - t0
+            log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
+            win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
+        except Exception as scan_err:
+            log(f"{time.strftime('%H:%M:%S')} scan error: {scan_err}")
+            try:
+                win32file.WriteFile(pipe, b"FAIL")
+            except Exception:
+                pass
+        finally:
+            cam.close()
         win32pipe.DisconnectNamedPipe(pipe)
         log(f"{time.strftime('%H:%M:%S')} disconnected, ready for next client")
     except Exception as e:
         log(f"{time.strftime('%H:%M:%S')} error: {e}")
+        cam.close()
         try:
             win32pipe.DisconnectNamedPipe(pipe)
         except Exception:
