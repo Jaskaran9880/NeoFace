@@ -123,10 +123,17 @@ def api_health():
 def api_photos():
     photo_exts = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
     photos = []
-    for f in sorted(os.listdir(PHOTOS_DIR)):
+    try:
+        files = os.listdir(PHOTOS_DIR)
+    except PermissionError:
+        return jsonify({"error": "Permission denied", "photos": []}), 403
+    for f in sorted(files):
         if f.lower().endswith(photo_exts):
             path = os.path.join(PHOTOS_DIR, f)
-            size = os.path.getsize(path)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
             photos.append({"name": f, "size": size, "size_kb": round(size / 1024, 1)})
     return jsonify({"photos": photos})
 
