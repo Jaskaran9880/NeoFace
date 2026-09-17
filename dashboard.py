@@ -114,6 +114,11 @@ def api_status():
     return jsonify(get_status())
 
 
+@app.route("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "version": "0.4.0"})
+
+
 @app.route("/api/photos")
 def api_photos():
     photo_exts = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
@@ -502,9 +507,13 @@ def api_troubleshoot(component):
                     results["camera"] = {"ok": False, "error": "Camera opened but cannot read frames"}
             else:
                 results["camera"] = {"ok": False, "error": "Camera failed to open"}
-            cap.release()
         except Exception as e:
             results["camera"] = {"ok": False, "error": str(e)}
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
 
     if component == "engine" or component == "all":
         try:
