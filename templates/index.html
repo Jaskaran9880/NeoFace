@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NeoFace Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        surface: { 50:'rgba(255,255,255,0.03)',100:'rgba(255,255,255,0.06)',200:'rgba(255,255,255,0.09)',300:'rgba(255,255,255,0.12)' },
+                        accent: { blue:'#60a5fa',purple:'#a78bfa',cyan:'#22d3ee',pink:'#f472b6' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: #030712;
+            color: #e2e8f0;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Liquid glass background blobs */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -30%;
+            left: -10%;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
+            filter: blur(80px);
+            pointer-events: none;
+            z-index: 0;
+        }
+        body::after {
+            content: '';
+            position: fixed;
+            bottom: -20%;
+            right: -5%;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 70%);
+            filter: blur(80px);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .wrapper { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+        /* Liquid glass panels */
+        .liquid-glass {
+            background: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+            backdrop-filter: blur(24px) saturate(150%);
+            -webkit-backdrop-filter: blur(24px) saturate(150%);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 20px;
+            box-shadow:
+                0 0 0 0.5px rgba(255,255,255,0.03) inset,
+                0 1px 2px rgba(0,0,0,0.3),
+                0 4px 16px rgba(0,0,0,0.2);
+        }
+
+        .liquid-glass-hover {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .liquid-glass-hover:hover {
+            background: linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%);
+            border-color: rgba(255,255,255,0.1);
+            box-shadow:
+                0 0 0 0.5px rgba(255,255,255,0.05) inset,
+                0 2px 4px rgba(0,0,0,0.3),
+                0 8px 32px rgba(0,0,0,0.25),
+                0 0 40px rgba(96,165,250,0.03);
+            transform: translateY(-1px);
+        }
+
+        /* Glass input */
+        .glass-input {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            color: #f1f5f9;
+            padding: 10px 14px;
+            font-size: 13px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        .glass-input:focus {
+            border-color: rgba(96,165,250,0.4);
+            box-shadow: 0 0 0 3px rgba(96,165,250,0.08), 0 0 20px rgba(96,165,250,0.05);
+            background: rgba(255,255,255,0.05);
+        }
+        .glass-input::placeholder { color: #475569; }
+
+        /* Glass buttons */
+        .glass-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 500;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        .glass-btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            opacity: 0;
+            transition: opacity 0.25s;
+            background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, transparent 100%);
+        }
+        .glass-btn:hover::before { opacity: 1; }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6, #6366f1);
+            border-color: rgba(99,102,241,0.3);
+            color: white;
+            box-shadow: 0 2px 8px rgba(59,130,246,0.25), 0 0 20px rgba(99,102,241,0.1);
+        }
+        .btn-primary:hover {
+            box-shadow: 0 4px 16px rgba(59,130,246,0.35), 0 0 30px rgba(99,102,241,0.15);
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #059669, #10b981);
+            border-color: rgba(16,185,129,0.3);
+            color: white;
+            box-shadow: 0 2px 8px rgba(16,185,129,0.2);
+        }
+        .btn-success:hover { box-shadow: 0 4px 16px rgba(16,185,129,0.3); transform: translateY(-1px); }
+
+        .btn-danger {
+            background: rgba(239,68,68,0.1);
+            border-color: rgba(239,68,68,0.2);
+            color: #fca5a5;
+        }
+        .btn-danger:hover { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.3); }
+
+        .btn-ghost {
+            background: rgba(255,255,255,0.04);
+            border-color: rgba(255,255,255,0.08);
+            color: #94a3b8;
+        }
+        .btn-ghost:hover { background: rgba(255,255,255,0.07); color: #e2e8f0; }
+
+        .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 10px; }
+
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            gap: 4px;
+            padding: 4px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 16px;
+            margin-bottom: 24px;
+        }
+        .tab-bar button {
+            flex: 1;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #64748b;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+        .tab-bar button:hover { color: #94a3b8; background: rgba(255,255,255,0.03); }
+        .tab-bar button.active {
+            color: #f1f5f9;
+            background: rgba(255,255,255,0.06);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2), 0 0 16px rgba(96,165,250,0.04);
+        }
+
+        /* Status indicator */
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .status-dot.green { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.5), 0 0 16px rgba(34,197,94,0.2); }
+        .status-dot.red { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.5), 0 0 16px rgba(239,68,68,0.2); }
+        .status-dot.yellow { background: #eab308; box-shadow: 0 0 8px rgba(234,179,8,0.5); }
+        .status-dot.gray { background: #475569; }
+
+        /* Badge */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 3px 10px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .badge-green { background: rgba(34,197,94,0.1); color: #4ade80; border: 1px solid rgba(34,197,94,0.15); }
+        .badge-red { background: rgba(239,68,68,0.1); color: #f87171; border: 1px solid rgba(239,68,68,0.15); }
+        .badge-blue { background: rgba(59,130,246,0.1); color: #60a5fa; border: 1px solid rgba(59,130,246,0.15); }
+
+        /* Section card */
+        .section-card {
+            padding: 24px;
+            margin-bottom: 16px;
+        }
+
+        /* Item row */
+        .item-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-radius: 14px;
+            transition: all 0.2s;
+            background: rgba(255,255,255,0.01);
+            border: 1px solid rgba(255,255,255,0.03);
+        }
+        .item-row:hover {
+            background: rgba(255,255,255,0.04);
+            border-color: rgba(255,255,255,0.06);
+        }
+
+        /* Progress bar */
+        .progress-track {
+            height: 6px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 100px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 100px;
+            transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .progress-fill.blue { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+        .progress-fill.green { background: linear-gradient(90deg, #10b981, #22c55e); box-shadow: 0 0 12px rgba(34,197,94,0.3); }
+
+        /* Upload zone */
+        .upload-zone {
+            border: 2px dashed rgba(255,255,255,0.06);
+            border-radius: 16px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .upload-zone:hover {
+            border-color: rgba(96,165,250,0.3);
+            background: rgba(96,165,250,0.02);
+        }
+        .upload-zone.dragover {
+            border-color: rgba(96,165,250,0.5);
+            background: rgba(96,165,250,0.05);
+            box-shadow: 0 0 40px rgba(96,165,250,0.05);
+        }
+
+        /* Photo card */
+        .photo-card {
+            position: relative;
+            border-radius: 14px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.04);
+            transition: all 0.3s;
+        }
+        .photo-card:hover {
+            border-color: rgba(255,255,255,0.1);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            transform: translateY(-2px);
+        }
+        .photo-card img {
+            width: 100%;
+            aspect-ratio: 1;
+            object-fit: cover;
+            display: block;
+        }
+        .photo-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+        .photo-card:hover .photo-overlay { opacity: 1; }
+
+        /* Log pre */
+        .log-box {
+            background: rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.04);
+            border-radius: 14px;
+            padding: 16px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 11px;
+            line-height: 1.7;
+            color: #94a3b8;
+            overflow: auto;
+            max-height: 400px;
+        }
+
+        /* Slider */
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 100px;
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #60a5fa, #818cf8);
+            box-shadow: 0 2px 8px rgba(96,165,250,0.4);
+            cursor: pointer;
+            transition: box-shadow 0.2s;
+        }
+        input[type="range"]::-webkit-slider-thumb:hover {
+            box-shadow: 0 2px 12px rgba(96,165,250,0.6), 0 0 20px rgba(96,165,250,0.2);
+        }
+
+        /* Header logo */
+        .logo-mark {
+            width: 44px;
+            height: 44px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6, #ec4899);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 18px;
+            color: white;
+            box-shadow: 0 4px 16px rgba(99,102,241,0.3), 0 0 40px rgba(99,102,241,0.1);
+            position: relative;
+        }
+        .logo-mark::after {
+            content: '';
+            position: absolute;
+            inset: -1px;
+            border-radius: inherit;
+            background: linear-gradient(135deg, rgba(255,255,255,0.2), transparent);
+            -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+            -webkit-mask-composite: xor;
+            mask-composite: exclude;
+            padding: 1px;
+        }
+
+        /* Scan button */
+        .scan-btn {
+            padding: 14px 32px;
+            border-radius: 16px;
+            font-size: 15px;
+            font-weight: 600;
+            background: linear-gradient(135deg, #3b82f6, #6366f1, #8b5cf6);
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 16px rgba(99,102,241,0.3), 0 0 40px rgba(99,102,241,0.08);
+        }
+        .scan-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(99,102,241,0.4), 0 0 60px rgba(99,102,241,0.12);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 100px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.12); }
+
+        /* Animations */
+        .fade-in { animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .shimmer { background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%); background-size: 200% 100%; animation: shimmer 2s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* Tooltip-like detail text */
+        .detail-text { font-size: 12px; color: #64748b; }
+        .label-text { font-size: 13px; font-weight: 500; color: #cbd5e1; }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <header class="mb-8">
+            <div class="flex items-center gap-4">
+                <div class="logo-mark">N</div>
+                <div>
+                    <h1 class="text-xl font-semibold tracking-tight" style="color:#f1f5f9">NeoFace</h1>
+                    <p style="font-size:12px;color:#64748b;letter-spacing:0.3px">Face unlock control center</p>
+                </div>
+            </div>
+        </header>
+
+        <div class="tab-bar" id="tabBar">
+            <button onclick="switchTab('setup')" id="tab-setup" class="active">Setup</button>
+            <button onclick="switchTab('photos')" id="tab-photos">Photos</button>
+            <button onclick="switchTab('settings')" id="tab-settings">Settings</button>
+            <button onclick="switchTab('test')" id="tab-test">Test</button>
+            <button onclick="switchTab('status')" id="tab-status">Status</button>
+            <button onclick="switchTab('troubleshoot')" id="tab-troubleshoot">Diagnose</button>
+            <button onclick="switchTab('logs')" id="tab-logs">Logs</button>
+        </div>
+
+        <main id="content"></main>
+    </div>
+
+    <script>
+    let currentTab = 'setup';
+
+    function switchTab(tab) {
+        currentTab = tab;
+        document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+        document.getElementById('tab-' + tab).classList.add('active');
+        const c = document.getElementById('content');
+        c.innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#475569"><div class="pulse">Loading...</div></div>';
+        c.className = 'fade-in';
+        const renderers = { setup: renderSetup, photos: renderPhotos, settings: renderSettings, test: renderTest, status: renderStatus, troubleshoot: renderTroubleshoot, logs: renderLogs };
+        if (renderers[tab]) renderers[tab]();
+    }
+
+    async function api(url, opts = {}) {
+        try { const r = await fetch(url, opts); return await r.json(); } catch(e) { return {error: e.message}; }
+    }
+
+    function dot(ok) { return `<span class="status-dot ${ok ? 'green' : 'red'}"></span>`; }
+    function checkmark(ok) { return ok ? '<span style="color:#4ade80;font-weight:600">&#10003;</span>' : '<span style="color:#f87171;font-weight:600">&#10007;</span>'; }
+
+    // ======================== SETUP ========================
+    async function renderSetup() {
+        const s = await api('/api/status');
+        const items = [
+            { label: 'Python packages', ok: true, desc: 'All dependencies installed' },
+            { label: 'AI models', ok: s.models.all, desc: s.models.all ? 'YuNet + SFace ready' : 'Not downloaded', action: s.models.all ? null : 'download-models', btn: 'Download' },
+            { label: 'Face photos', ok: s.photos.count > 0, desc: `${s.photos.count} photos enrolled`, link: 'photos' },
+            { label: 'Face gallery', ok: s.gallery, desc: s.gallery ? `${s.gallery_templates} templates` : 'Not enrolled', action: s.gallery ? null : 'enroll', btn: 'Enroll' },
+            { label: 'Password vault', ok: s.vault, desc: s.vault ? 'Encrypted' : 'Not set', action: s.vault ? null : 'password', btn: 'Setup', input: !s.vault },
+            { label: 'Lock screen tile', ok: s.dll, desc: s.dll ? 'DLL registered' : 'Not installed' },
+            { label: 'Daemon service', ok: s.task, desc: s.task ? 'Installed' : 'Not installed', action: s.task ? null : 'daemon', btn: 'Install' },
+        ];
+        const done = items.filter(i => i.ok).length;
+        const allDone = done === items.length;
+
+        let html = `<div class="section-card liquid-glass">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+                <h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Setup Wizard</h2>
+                <span class="badge ${allDone ? 'badge-green' : 'badge-blue'}">${done}/${items.length}</span>
+            </div>
+            <div class="progress-track" style="margin-bottom:24px">
+                <div class="progress-fill ${allDone ? 'green' : 'blue'}" style="width:${(done/items.length)*100}%"></div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">`;
+
+        items.forEach(i => {
+            html += `<div class="item-row">
+                <div style="display:flex;align-items:center;gap:12px">
+                    ${checkmark(i.ok)}
+                    <span class="label-text">${i.label}</span>
+                    <span class="detail-text">${i.desc}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                    ${i.ok ? '<span class="badge badge-green">Installed</span>' : ''}
+                    ${i.link ? `<button onclick="switchTab('${i.link}')" class="glass-btn btn-ghost btn-sm">View</button>` : ''}
+                    ${i.action ? `<button onclick="setupAction('${i.action}')" class="glass-btn btn-primary btn-sm">${i.btn}</button>` : ''}
+                    ${i.input ? '<input id="pw-input" type="password" placeholder="Windows password" class="glass-input" style="width:180px;padding:7px 12px;font-size:12px">' : ''}
+                </div>
+            </div>`;
+        });
+
+        html += '</div></div>';
+        document.getElementById('content').innerHTML = html;
+    }
+
+    async function setupAction(action) {
+        if (action === 'password') {
+            const pw = document.getElementById('pw-input')?.value;
+            if (!pw) { alert('Enter your Windows password'); return; }
+            const r = await api('/api/setup/password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw}) });
+            alert(r.success ? 'Password vault created!' : 'Error: ' + (r.error || 'unknown'));
+        } else if (action === 'download-models') {
+            alert('Downloading models... this may take a minute.');
+            const r = await api('/api/setup/models', { method: 'POST' });
+            alert(r.success ? 'Models downloaded!' : 'Error: ' + (r.error || 'unknown'));
+        } else if (action === 'enroll') {
+            alert('Enrolling faces from photos...');
+            const r = await api('/api/enroll', { method: 'POST' });
+            alert(r.success ? `Enrolled ${r.templates} templates!` : 'Error: ' + (r.error || r.output));
+        } else if (action === 'daemon') {
+            const r = await api('/api/setup/daemon', { method: 'POST' });
+            alert(r.success ? 'Daemon installed!' : 'Error: ' + (r.error || r.output));
+        }
+        renderSetup();
+    }
+
+    // ======================== PHOTOS ========================
+    async function renderPhotos() {
+        const data = await api('/api/photos');
+        let html = `<div class="section-card liquid-glass">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+                <h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Face Photos <span class="detail-text" style="font-weight:400">(${data.photos.length})</span></h2>
+                <div style="display:flex;gap:8px">
+                    <button onclick="enrollFaces()" class="glass-btn btn-success btn-sm">Re-enroll</button>
+                    <button onclick="clearPhotos()" class="glass-btn btn-danger btn-sm">Clear All</button>
+                </div>
+            </div>
+            <div id="upload-zone" class="upload-zone" onclick="document.getElementById('file-input').click()">
+                <input id="file-input" type="file" multiple accept=".jpg,.jpeg,.png,.bmp,.heic,.heif,.webp" class="hidden" onchange="uploadPhotos(this.files)">
+                <svg style="width:36px;height:36px;margin:0 auto 12px;color:#475569" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+                <p style="font-size:13px;font-weight:500;color:#94a3b8">Drop photos here or click to upload</p>
+                <p style="font-size:11px;color:#475569;margin-top:4px">JPG, PNG, HEIC supported</p>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px" id="photo-grid">`;
+
+        data.photos.forEach(p => {
+            html += `<div class="photo-card">
+                <img src="/api/photos/${encodeURIComponent(p.name)}/thumb" alt="${p.name}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                <div style="display:none;aspect-ratio:1;align-items:center;justify-content:center;color:#475569;font-size:11px">${p.name.split('.').pop().toUpperCase()}</div>
+                <div class="photo-overlay">
+                    <button onclick="deletePhoto('${p.name.replace(/'/g, "\\'")}')" class="glass-btn btn-danger btn-sm" style="font-size:11px">Delete</button>
+                </div>
+            </div>`;
+        });
+
+        html += '</div></div>';
+        document.getElementById('content').innerHTML = html;
+
+        const zone = document.getElementById('upload-zone');
+        zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('dragover'); };
+        zone.ondragleave = () => zone.classList.remove('dragover');
+        zone.ondrop = (e) => { e.preventDefault(); zone.classList.remove('dragover'); uploadPhotos(e.dataTransfer.files); };
+    }
+
+    async function uploadPhotos(files) {
+        const fd = new FormData();
+        for (const f of files) fd.append('files', f);
+        const r = await api('/api/photos/upload', { method: 'POST', body: fd });
+        alert(`Uploaded ${r.saved} photos`);
+        renderPhotos();
+    }
+
+    async function deletePhoto(name) {
+        if (!confirm(`Delete ${name}?`)) return;
+        await api(`/api/photos/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        renderPhotos();
+    }
+
+    async function clearPhotos() {
+        if (!confirm('Delete all photos?')) return;
+        await api('/api/photos/clear', { method: 'POST' });
+        renderPhotos();
+    }
+
+    async function enrollFaces() {
+        alert('Enrolling faces... this may take a minute.');
+        const r = await api('/api/enroll', { method: 'POST' });
+        alert(r.success ? `Enrolled ${r.templates} templates!` : 'Error: ' + (r.error || r.output));
+    }
+
+    // ======================== SETTINGS ========================
+    async function renderSettings() {
+        const s = await api('/api/settings');
+        let html = `<div class="section-card liquid-glass">
+            <h2 style="font-size:16px;font-weight:600;color:#f1f5f9;margin-bottom:24px">Settings</h2>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+                <div style="display:flex;flex-direction:column;gap:20px">
+                    <div>
+                        <label style="display:flex;justify-content:space-between;margin-bottom:8px"><span class="detail-text">Cosine Threshold</span><span style="font-family:monospace;color:#f1f5f9;font-size:13px" id="thresh-val">${s.threshold}</span></label>
+                        <input id="thresh" type="range" min="0.1" max="0.8" step="0.05" value="${s.threshold}" oninput="document.getElementById('thresh-val').textContent=this.value">
+                        <div style="display:flex;justify-content:space-between;margin-top:4px"><span class="detail-text">Lenient</span><span class="detail-text">Strict</span></div>
+                    </div>
+                    <div>
+                        <label class="detail-text" style="display:block;margin-bottom:6px">Frames to capture</label>
+                        <input id="frames" type="number" min="1" max="10" value="${s.frames}" class="glass-input" style="width:100%">
+                    </div>
+                    <div>
+                        <label class="detail-text" style="display:block;margin-bottom:6px">Hits required</label>
+                        <input id="hits" type="number" min="1" max="10" value="${s.hit_required}" class="glass-input" style="width:100%">
+                    </div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:20px">
+                    <div>
+                        <label class="detail-text" style="display:block;margin-bottom:6px">Image size (px)</label>
+                        <input id="imgsize" type="number" min="160" max="640" step="32" value="${s.image_size}" class="glass-input" style="width:100%">
+                    </div>
+                    <div>
+                        <label class="detail-text" style="display:block;margin-bottom:6px">Camera index</label>
+                        <input id="camidx" type="number" min="0" max="5" value="${s.camera_index}" class="glass-input" style="width:100%">
+                    </div>
+                </div>
+            </div>
+            <button onclick="saveSettings()" class="glass-btn btn-primary" style="margin-top:28px">Save Settings</button>
+        </div>`;
+        document.getElementById('content').innerHTML = html;
+    }
+
+    async function saveSettings() {
+        const data = {
+            threshold: parseFloat(document.getElementById('thresh').value),
+            frames: parseInt(document.getElementById('frames').value),
+            hit_required: parseInt(document.getElementById('hits').value),
+            image_size: parseInt(document.getElementById('imgsize').value),
+            camera_index: parseInt(document.getElementById('camidx').value),
+        };
+        await api('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+        alert('Settings saved! Restart daemon to apply.');
+    }
+
+    // ======================== TEST ========================
+    async function renderTest() {
+        let html = `<div class="section-card liquid-glass">
+            <h2 style="font-size:16px;font-weight:600;color:#f1f5f9;margin-bottom:20px">Live Face Test</h2>
+            <div id="test-result" style="text-align:center;padding:48px 0">
+                <div style="width:72px;height:72px;border-radius:50%;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
+                    <svg style="width:32px;height:32px;color:#475569" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                </div>
+                <p style="color:#94a3b8;font-size:13px;margin-bottom:4px">Click to scan your face</p>
+                <p style="color:#475569;font-size:11px;margin-bottom:20px">Stop daemon first if camera is busy</p>
+                <button onclick="runScan()" class="scan-btn">Scan Now</button>
+            </div>
+        </div>`;
+        document.getElementById('content').innerHTML = html;
+    }
+
+    async function runScan() {
+        document.getElementById('test-result').innerHTML = '<div class="pulse" style="color:#94a3b8;padding:48px 0">Scanning... look at camera</div>';
+        const r = await api('/api/test-scan', { method: 'POST' });
+        if (r.error) {
+            document.getElementById('test-result').innerHTML = `<div style="color:#f87171;padding:48px 0">${r.error}</div>`;
+            return;
+        }
+        const ok = r.result === 'OK';
+        document.getElementById('test-result').innerHTML = `
+            <div style="padding:32px 0">
+                <div style="width:72px;height:72px;border-radius:50%;background:${ok ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'};border:1px solid ${ok ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'};box-shadow:0 0 30px ${ok ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'};display:flex;align-items:center;justify-content:center;margin:0 auto 16px">
+                    <span style="font-size:32px">${ok ? '&#128077;' : '&#128078;'}</span>
+                </div>
+                <div style="font-size:20px;font-weight:700;color:${ok ? '#4ade80' : '#f87171'};margin-bottom:20px">${r.result}</div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:320px;margin:0 auto 16px">
+                    <div class="liquid-glass" style="padding:12px;text-align:center;border-radius:12px"><div class="detail-text">Frames</div><div style="font-size:20px;font-weight:700;color:#f1f5f9">${r.frames}</div></div>
+                    <div class="liquid-glass" style="padding:12px;text-align:center;border-radius:12px"><div class="detail-text">Faces</div><div style="font-size:20px;font-weight:700;color:#f1f5f9">${r.faces}</div></div>
+                    <div class="liquid-glass" style="padding:12px;text-align:center;border-radius:12px"><div class="detail-text">Best</div><div style="font-size:20px;font-weight:700;color:#f1f5f9">${r.best}</div></div>
+                </div>
+                <div class="detail-text">Scores: [${r.scores.join(', ')}] &middot; Threshold: ${r.threshold}</div>
+            </div>`;
+    }
+
+    // ======================== STATUS ========================
+    async function renderStatus() {
+        const s = await api('/api/status');
+        const items = [
+            { label: 'Daemon', ok: s.daemon.running, detail: s.daemon.pid ? `PID ${s.daemon.pid}` : 'not running', action: s.daemon.running ? 'stop' : 'start', actionLabel: s.daemon.running ? 'Stop' : 'Start' },
+            { label: 'Camera', ok: s.camera.available, detail: s.camera.name },
+            { label: 'AI Models', ok: s.models.all, detail: s.models.all ? 'YuNet + SFace' : 'missing' },
+            { label: 'Face Gallery', ok: s.gallery, detail: s.gallery ? `${s.gallery_templates} templates` : 'empty' },
+            { label: 'Password Vault', ok: s.vault, detail: s.vault ? 'encrypted' : 'not set' },
+            { label: 'Lock Screen DLL', ok: s.dll, detail: s.dll ? 'registered' : 'not installed' },
+            { label: 'Scheduled Task', ok: s.task, detail: s.task ? 'NeoFace-Daemon' : 'not installed' },
+        ];
+        let html = `<div class="section-card liquid-glass">
+            <h2 style="font-size:16px;font-weight:600;color:#f1f5f9;margin-bottom:16px">System Status</h2>
+            <div style="display:flex;flex-direction:column;gap:6px">`;
+
+        items.forEach(i => {
+            html += `<div class="item-row">
+                <div style="display:flex;align-items:center;gap:12px">
+                    ${dot(i.ok)}
+                    <span class="label-text">${i.label}</span>
+                    <span class="detail-text">${i.detail}</span>
+                </div>
+                <div>
+                    ${i.action ? `<button onclick="daemonAction('${i.action}')" class="glass-btn btn-sm ${i.action === 'stop' ? 'btn-danger' : 'btn-success'}">${i.actionLabel}</button>` : ''}
+                </div>
+            </div>`;
+        });
+
+        html += '</div></div>';
+        document.getElementById('content').innerHTML = html;
+    }
+
+    async function daemonAction(action) {
+        await api(`/api/daemon/${action}`, { method: 'POST' });
+        setTimeout(renderStatus, 1000);
+    }
+
+    // ======================== TROUBLESHOOT ========================
+    async function renderTroubleshoot() {
+        let html = `<div class="section-card liquid-glass">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+                <div>
+                    <h2 style="font-size:16px;font-weight:600;color:#f1f5f9;margin-bottom:2px">Diagnostics</h2>
+                    <p class="detail-text">Test each component individually to find issues</p>
+                </div>
+                <button onclick="runAllTests()" class="glass-btn btn-primary" id="runAllBtn">Run All Tests</button>
+            </div>
+            <div id="troubleshoot-results" style="display:flex;flex-direction:column;gap:6px">
+                <div style="text-align:center;padding:32px 0" class="detail-text">Click "Run All Tests" to start diagnostics</div>
+            </div>
+        </div>`;
+        document.getElementById('content').innerHTML = html;
+    }
+
+    async function runAllTests() {
+        const btn = document.getElementById('runAllBtn');
+        btn.disabled = true;
+        btn.textContent = 'Running...';
+
+        const container = document.getElementById('troubleshoot-results');
+        const components = ['camera', 'engine', 'gallery', 'pipe', 'vault', 'dll', 'daemon'];
+        const labels = { camera: 'Camera', engine: 'Face Engine', gallery: 'Face Gallery', pipe: 'Named Pipe', vault: 'Password Vault', dll: 'Lock Screen DLL', daemon: 'Daemon Process' };
+        const icons = {
+            camera: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>',
+            engine: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>',
+            gallery: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>',
+            pipe: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>',
+            vault: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>',
+            dll: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>',
+            daemon: '<svg style="width:16px;height:16px;color:#64748b" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>'
+        };
+
+        container.innerHTML = components.map(c => `
+            <div id="test-${c}" class="item-row">
+                <div style="display:flex;align-items:center;gap:12px">
+                    <span class="status-dot gray pulse"></span>
+                    <span class="label-text">${labels[c]}</span>
+                </div>
+                <span class="detail-text">Testing...</span>
+            </div>`).join('');
+
+        for (const c of components) {
+            const r = await api(`/api/troubleshoot/${c}`, { method: 'POST' });
+            const result = r[c] || r;
+            const ok = result.ok;
+            const detail = result.error || result.message || (ok ? 'OK' : 'FAIL');
+            const extras = [
+                result.resolution,
+                result.templates !== undefined ? `${result.templates} templates` : null,
+                result.pid ? `PID ${result.pid}` : null
+            ].filter(Boolean).join(' &middot; ');
+
+            document.getElementById(`test-${c}`).innerHTML = `
+                <div style="display:flex;align-items:center;gap:12px">
+                    ${dot(ok)}
+                    <span class="label-text">${labels[c]}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span class="badge ${ok ? 'badge-green' : 'badge-red'}">${detail}</span>
+                    ${extras ? `<span class="detail-text">${extras}</span>` : ''}
+                </div>`;
+        }
+
+        btn.disabled = false;
+        btn.textContent = 'Run All Tests';
+    }
+
+    // ======================== LOGS ========================
+    async function renderLogs() {
+        const d = await api('/api/logs?type=daemon&lines=50');
+        let html = `<div class="section-card liquid-glass">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+                <h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Logs</h2>
+                <div style="display:flex;gap:8px">
+                    <select id="log-type" onchange="refreshLogs()" class="glass-input" style="padding:7px 12px;font-size:12px">
+                        <option value="daemon">Daemon Log</option>
+                        <option value="cp">CP DLL Log</option>
+                    </select>
+                    <button onclick="refreshLogs()" class="glass-btn btn-ghost btn-sm">Refresh</button>
+                    <button onclick="clearLogs()" class="glass-btn btn-danger btn-sm">Clear</button>
+                </div>
+            </div>
+            <pre id="log-content" class="log-box">${escapeHtml(d.content || 'No logs yet')}</pre>
+        </div>`;
+        document.getElementById('content').innerHTML = html;
+    }
+
+    async function refreshLogs() {
+        const type = document.getElementById('log-type').value;
+        const r = await api(`/api/logs?type=${type}&lines=100`);
+        document.getElementById('log-content').textContent = r.content || 'No logs';
+    }
+
+    async function clearLogs() {
+        const type = document.getElementById('log-type').value;
+        await api('/api/logs/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({type}) });
+        refreshLogs();
+    }
+
+    function escapeHtml(t) { return (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    renderSetup();
+    </script>
+</body>
+</html>
