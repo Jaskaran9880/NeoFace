@@ -18,6 +18,7 @@ import win32file
 from face_unlock.fast import FastEngine
 from face_unlock.store import Gallery
 from face_unlock.matcher import cosine_score
+from face_unlock.antispoof import SpoofGate
 
 PIPE = r"\\.\pipe\NeoFace"
 IMG_SIZE = 320
@@ -31,8 +32,10 @@ engine = FastEngine(os.path.join(ROOT, "models", "yunet.onnx"),
 engine.load()
 gallery = Gallery(r"C:\ProgramData\NeoFace\faces_fast.dat")
 gallery.load()
+spoof = SpoofGate()
+spoof.load()
 
-log(f"daemon loaded - {sum(len(v) for v in gallery.templates.values())} fast templates")
+log(f"daemon loaded - {sum(len(v) for v in gallery.templates.values())} fast templates, antispoof={'on' if spoof.net else 'off'}")
 
 class Cam:
     def __init__(self):
@@ -136,6 +139,10 @@ while True:
                     faces_seen += 1
                 if emb is None:
                     continue
+                real = spoof.real_score(f)
+                if real < spoof.threshold:
+                    log(f"{time.strftime('%H:%M:%S')} spoof rejected frame: real={real:.3f} < {spoof.threshold}")
+                    continue
                 cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
                 if cands:
                     scores.append(max(cosine_score(emb, c) for c in cands))
@@ -144,7 +151,7 @@ while True:
             good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
             best = max(scores) if scores else 0.0
             total = time.time() - t0
-            log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
+            log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof={'on' if spoof.net else 'off'} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
             win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
         except Exception as scan_err:
             log(f"{time.strftime('%H:%M:%S')} scan error: {scan_err}")
