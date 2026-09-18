@@ -139,6 +139,10 @@ C:\NeoFace\
 
 MIT
 
+## Security
+
+See [docs/SECURITY.md](docs/SECURITY.md) for threat model, password vault security notes, and known limitations.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and code style guidelines.
