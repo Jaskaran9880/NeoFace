@@ -53,6 +53,12 @@ class Gallery:
                 _, blob = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
             except Exception as e:
                 raise ValueError(f"Failed to decrypt gallery: {e}")
+        try:
+            self._parse(blob)
+        except (struct.error, IndexError, ValueError) as e:
+            raise ValueError(f"Corrupted gallery file ({self.path}): {e}")
+
+    def _parse(self, blob):
         if blob[:4] == b"NF01":
             off = 4
             nusers = struct.unpack_from("<I", blob, off)[0]
