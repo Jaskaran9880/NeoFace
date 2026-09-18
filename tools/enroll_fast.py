@@ -25,20 +25,44 @@ def load_image(p):
     import numpy as np
     return cv2.cvtColor(np.array(Image.open(p).convert("RGB")), cv2.COLOR_RGB2BGR)
 
+def embed_with_crop(engine, img):
+    """Detect face at full resolution, crop, then embed."""
+    h, w = img.shape[:2]
+    eng = engine
+    eng.det.setInputSize((w, h))
+    _, faces = eng.det.detect(img)
+    if faces is None or len(faces) == 0:
+        return None, None
+    f = max(faces, key=lambda x: x[2] * x[3])
+    x, y, fw, fh = int(f[0]), int(f[1]), int(f[2]), int(f[3])
+    pad = int(max(fw, fh) * 0.3)
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(w, x + fw + pad)
+    y2 = min(h, y + fh + pad)
+    crop = img[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None, None
+    crop = cv2.resize(crop, (112, 112))
+    emb = eng.rec.feature(crop)
+    return emb.flatten() if emb is not None else None, f
+
 base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "photos")
 vids = []
 saved = 0
 if os.path.isdir(base):
-    for n in os.listdir(base):
+    for n in sorted(os.listdir(base)):
         if not n.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")):
             continue
         img = load_image(os.path.join(base, n))
         if img is None:
             continue
-        h, w = img.shape[:2]
-        if w > 640:
-            img = cv2.resize(img, (640, int(h * 640 / w)))
-        emb, face = engine.embed(img)
+        emb, face = embed_with_crop(engine, img)
+        if emb is None:
+            h, w = img.shape[:2]
+            if w > 640:
+                img = cv2.resize(img, (640, int(h * 640 / w)))
+            emb, face = engine.embed(img)
         if emb is None:
             print(f"no face {n}")
             continue
