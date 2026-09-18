@@ -8,6 +8,34 @@ from face_unlock.fast import FastEngine
 from face_unlock.store import Gallery
 from face_unlock.presence import Presence, idle_seconds
 
+CAMERA_INDEX = 0
+try:
+    with open(os.path.join(os.path.dirname(__file__), "..", "config.toml")) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("index") and "=" in line:
+                CAMERA_INDEX = int(line.split("=", 1)[1].strip())
+except Exception:
+    pass
+
+def _detect_camera():
+    global CAMERA_INDEX
+    for i in range(4):
+        try:
+            cam = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            time.sleep(0.5)
+            cam.grab()
+            ok, frame = cam.read()
+            cam.release()
+            if ok and frame.mean() > 5:
+                CAMERA_INDEX = i
+                return
+        except Exception:
+            continue
+
+_detect_camera()
+
 user = os.getlogin()
 engine = FastEngine()
 engine.load()
@@ -26,7 +54,7 @@ print(f"presence live for {user} - any face = stay, empty x2 = lock. Ctrl+C stop
 while True:
     time.sleep(presence.interval_s)
     try:
-        cap = cv.VideoCapture(0, cv.CAP_DSHOW)
+        cap = cv.VideoCapture(CAMERA_INDEX, cv.CAP_DSHOW)
         cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv.CAP_PROP_FRAME_HEIGHT, 480)

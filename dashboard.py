@@ -100,6 +100,47 @@ os.makedirs(PHOTOS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 
+def _get_camera_index():
+    """Read camera index from config, auto-detect if missing or broken."""
+    idx = 0
+    try:
+        with open(CONFIG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("index") and "=" in line:
+                    idx = int(line.split("=", 1)[1].strip())
+    except Exception:
+        pass
+    try:
+        import cv2
+        cam = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        import time
+        time.sleep(0.5)
+        cam.grab()
+        ok, frame = cam.read()
+        cam.release()
+        if ok and frame.mean() > 5:
+            return idx
+    except Exception:
+        pass
+    for i in range(4):
+        try:
+            import cv2
+            cam = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            import time
+            time.sleep(0.5)
+            cam.grab()
+            ok, frame = cam.read()
+            cam.release()
+            if ok and frame.mean() > 5:
+                return i
+        except Exception:
+            continue
+    return idx
+
+
 def _find_daemon_pids():
     """Return list of PIDs for running daemon processes."""
     try:
@@ -149,7 +190,7 @@ def get_status():
     if not daemon_running:
         try:
             import cv2
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(_get_camera_index(), cv2.CAP_DSHOW)
             if cap.isOpened():
                 status["camera"]["available"] = True
                 status["camera"]["name"] = cap.getBackendName()
@@ -488,7 +529,7 @@ def api_test_scan():
         gallery = Gallery(GALLERY_FAST)
         gallery.load()
 
-        cam = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        cam = cv2.VideoCapture(_get_camera_index(), cv2.CAP_DSHOW)
         cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -571,8 +612,11 @@ def api_setup_password():
         return jsonify({"error": "No password provided"}), 400
     try:
         import win32crypt
-        blob = password.encode("utf-8")
-        encrypted = win32crypt.CryptProtectData(blob, None, None, None, None, 0x01)
+        import socket
+        domain = os.environ.get("USERDOMAIN", socket.gethostname())
+        user = os.environ.get("USERNAME", "perve")
+        raw = f"{domain}\n{user}\n{password}".encode("utf-8")
+        encrypted = win32crypt.CryptProtectData(raw, None, None, None, None, 0x04)
         os.makedirs(os.path.dirname(CRED_BIN), exist_ok=True)
         with open(CRED_BIN, "wb") as f:
             f.write(encrypted)
@@ -641,7 +685,7 @@ def api_troubleshoot(component):
     if component == "camera" or component == "all":
         try:
             import cv2
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(_get_camera_index(), cv2.CAP_DSHOW)
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             ok = cap.isOpened()

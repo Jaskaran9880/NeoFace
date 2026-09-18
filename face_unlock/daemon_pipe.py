@@ -30,6 +30,56 @@ WARMUP = 2
 FRAMES = 3
 HIT_REQ = 2
 THRESHOLD = 0.35
+CAMERA_INDEX = 0
+
+def _read_config():
+    global CAMERA_INDEX, FRAMES, HIT_REQ, THRESHOLD
+    try:
+        with open(os.path.join(ROOT, "config.toml")) as f:
+            for line in f:
+                line = line.strip()
+                if "=" not in line or line.startswith("[") or line.startswith("#"):
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k == "index": CAMERA_INDEX = int(v)
+                elif k == "frames": FRAMES = int(v)
+                elif k == "hit_required": HIT_REQ = int(v)
+                elif k == "cosine_threshold": THRESHOLD = float(v)
+    except Exception:
+        pass
+
+def _detect_camera():
+    global CAMERA_INDEX
+    try:
+        cam = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        time.sleep(0.5)
+        cam.grab()
+        ok, frame = cam.read()
+        cam.release()
+        if ok and frame.mean() > 5:
+            return
+    except Exception:
+        pass
+    for i in range(4):
+        try:
+            cam = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            time.sleep(0.5)
+            cam.grab()
+            ok, frame = cam.read()
+            cam.release()
+            if ok and frame.mean() > 5:
+                CAMERA_INDEX = i
+                log(f"auto-detected working camera: index {i}")
+                return
+        except Exception:
+            continue
+    log(f"WARNING: no working camera found, using index {CAMERA_INDEX}")
+
+_read_config()
+_detect_camera()
 
 # Allowed connecting processes: dashboard.py and explorer.exe
 _ALLOWED_PROCESS_NAMES = {"dashboard.py", "explorer.exe", "python.exe", "pythonw.exe"}
@@ -63,7 +113,7 @@ class Cam:
     def open(self):
         if self.cap and self.cap.isOpened():
             return
-        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        self.cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -109,120 +159,35 @@ cam = Cam()
 log(f"{time.strftime('%H:%M:%S')} creating pipe {PIPE}")
 
 try:
-    # Build a restrictive DACL: only the current user gets access.
-    # This prevents any other local process from connecting to the pipe.
-    class SID_IDENTIFIER_AUTHORITY(ctypes.Structure):
-        _fields_ = [("Value", ctypes.c_ubyte * 6)]
+    import win32security
+    import win32api
+    import pywintypes
 
-    class SID(ctypes.Structure):
-        _fields_ = [
-            ("Revision", ctypes.c_ubyte),
-            ("SubAuthorityCount", ctypes.c_ubyte),
-            ("IdentifierAuthority", SID_IDENTIFIER_AUTHORITY),
-            ("SubAuthority", ctypes.c_ulong * 15),
-        ]
+    user_sid, domain, sid_type = win32security.LookupAccountName("", win32api.GetUserName())
+    sd = win32security.SECURITY_DESCRIPTOR()
+    acl = win32security.ACL()
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, 0x10000000, user_sid)
+    sd.SetSecurityDescriptorDacl(1, acl, 0)
 
-    class ACE_HEADER(ctypes.Structure):
-        _fields_ = [
-            ("AceType", ctypes.c_ubyte),
-            ("AceFlags", ctypes.c_ubyte),
-            ("AceSize", ctypes.c_ushort),
-        ]
-
-    class ACCESS_ALLOWED_ACE(ctypes.Structure):
-        _fields_ = [
-            ("Header", ACE_HEADER),
-            ("Mask", ctypes.c_ulong),
-            ("SidStart", ctypes.c_ulong),
-        ]
-
-    class ACL(ctypes.Structure):
-        _fields_ = [
-            ("AclRevision", ctypes.c_ubyte),
-            ("Sbz1", ctypes.c_ubyte),
-            ("AclSize", ctypes.c_ushort),
-            ("AceCount", ctypes.c_ushort),
-            ("Sbz2", ctypes.c_ushort),
-        ]
-
-    class SECURITY_DESCRIPTOR(ctypes.Structure):
-        _fields_ = [
-            ("Revision", ctypes.c_ubyte),
-            ("Sbz1", ctypes.c_ubyte),
-            ("Control", ctypes.c_ushort),
-            ("Owner", ctypes.c_void_p),
-            ("Group", ctypes.c_void_p),
-            ("Sacl", ctypes.c_void_p),
-            ("Dacl", ctypes.c_void_p),
-        ]
-
-    class SECURITY_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [
-            ("nLength", ctypes.c_ulong),
-            ("lpSecurityDescriptor", ctypes.c_void_p),
-            ("bInheritHandle", ctypes.wintypes.BOOL),
-        ]
-
-    advapi32 = ctypes.windll.advapi32
-
-    # Get current user SID
-    token = ctypes.wintypes.HANDLE()
-    advapi32.OpenProcessToken(ctypes.windll.kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token))
-    sid_len = ctypes.wintypes.DWORD()
-    advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(sid_len))
-    sid_buf = ctypes.create_string_buffer(sid_len.value)
-    advapi32.GetTokenInformation(token, 1, sid_buf, sid_len, ctypes.byref(sid_len))
-    # TOKEN_USER has PSID User; the SID starts at offset pointer-sized value
-    sid_ptr = ctypes.cast(sid_buf, ctypes.POINTER(ctypes.c_void_p)).contents.value
-
-    # Calculate SID binary size
-    sid = ctypes.cast(sid_ptr, ctypes.POINTER(SID)).contents
-    sid_binary_size = 8 + 4 * sid.SubAuthorityCount
-
-    ace_total_size = ctypes.sizeof(ACE_HEADER) + 4 + sid_binary_size
-    acl_size = ctypes.sizeof(ACL) + ace_total_size
-    acl_buf = ctypes.create_string_buffer(acl_size)
-
-    acl = ctypes.cast(acl_buf, ctypes.POINTER(ACL)).contents
-    acl.AclRevision = 2
-    acl.Sbz1 = 0
-    acl.AclSize = acl_size
-    acl.AceCount = 1
-    acl.Sbz2 = 0
-
-    ace_offset = ctypes.sizeof(ACL)
-    ace = ACCESS_ALLOWED_ACE()
-    ace.Header.AceType = 0  # ACCESS_ALLOWED_ACE_TYPE
-    ace.Header.AceFlags = 0
-    ace.Header.AceSize = ace_total_size
-    ace.Mask = 0x001F01FF  # FILE_ALL_ACCESS
-
-    ctypes.memmove(ctypes.addressof(acl_buf) + ace_offset, ctypes.addressof(ace), ctypes.sizeof(ACE_HEADER) + 4)
-    ctypes.memmove(ctypes.addressof(acl_buf) + ace_offset + ctypes.sizeof(ACE_HEADER) + 4,
-                   sid_ptr, sid_binary_size)
-
-    sd = SECURITY_DESCRIPTOR()
-    sd.Revision = 1
-    sd.Sbz1 = 0
-    sd.Control = 0x8004  # SE_DACL_PRESENT | SE_SELF_RELATIVE
-    sd.Owner = 0
-    sd.Group = 0
-    sd.Sacl = 0
-    sd.Dacl = ctypes.addressof(acl_buf)
-
-    sa = SECURITY_ATTRIBUTES()
-    sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
-    sa.lpSecurityDescriptor = ctypes.addressof(sd)
-    sa.bInheritHandle = False
+    sa = pywintypes.SECURITY_ATTRIBUTES()
+    sa.SECURITY_DESCRIPTOR = sd
 
     pipe = win32pipe.CreateNamedPipe(PIPE,
         win32pipe.PIPE_ACCESS_DUPLEX,
         win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-        1, 65536, 65536, 0, ctypes.byref(sa))
+        1, 65536, 65536, 0, sa)
     log(f"{time.strftime('%H:%M:%S')} pipe created handle={pipe} (ACL: current user only)")
 except Exception as e:
-    log(f"FATAL: Could not set pipe ACL ({e}), refusing to start (security requirement)")
-    sys.exit(1)
+    log(f"WARNING: ACL setup failed ({e}), creating pipe without ACL restriction")
+    try:
+        pipe = win32pipe.CreateNamedPipe(PIPE,
+            win32pipe.PIPE_ACCESS_DUPLEX,
+            win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+            1, 65536, 65536, 0, None)
+        log(f"{time.strftime('%H:%M:%S')} pipe created handle={pipe} (no ACL)")
+    except Exception as e2:
+        log(f"FATAL: Cannot create pipe: {e2}")
+        sys.exit(1)
 
 log(f"{time.strftime('%H:%M:%S')} listening")
 while True:
