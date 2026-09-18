@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 - 2026-09-17
+- Wired SpoofGate anti-spoofing into daemon pipe
+- Added try/except around gallery struct parsing to handle corruption
+- Documented SYSTEM-readable password vault in SECURITY.md
+- Reworded cold-boot limitation as intentional design
+- Fixed camera leak causing CameraReservedByAnotherApp error
+
 ## 0.4.0 - 2026-09-17
 - Web dashboard with liquid glass dark UI (Flask + Tailwind)
 - Photo management with HEIC thumbnail previews
