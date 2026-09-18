@@ -5,6 +5,7 @@ data/
 models/*
 !models/.gitkeep
 !models/README.txt
+!models/antifas_v2.onnx
 dist/
 build/
 *.log
