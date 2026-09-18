@@ -27,6 +27,11 @@ FRAMES = 3
 HIT_REQ = 2
 THRESHOLD = 0.35
 
+for name, path in [("yunet", "models/yunet.onnx"), ("sface", "models/sface.onnx")]:
+    if not os.path.exists(os.path.join(ROOT, path)):
+        log(f"FATAL: missing model {path}")
+        sys.exit(1)
+
 engine = FastEngine(os.path.join(ROOT, "models", "yunet.onnx"),
                     os.path.join(ROOT, "models", "sface.onnx"))
 engine.load()
@@ -126,6 +131,7 @@ while True:
             scores = []
             frames_ok = 0
             faces_seen = 0
+            spoofs_rejected = 0
             for _ in range(FRAMES):
                 ok, f = cam.read()
                 if not ok:
@@ -142,6 +148,7 @@ while True:
                 real = spoof.real_score(f)
                 if real < spoof.threshold:
                     log(f"{time.strftime('%H:%M:%S')} spoof rejected frame: real={real:.3f} < {spoof.threshold}")
+                    spoofs_rejected += 1
                     continue
                 cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
                 if cands:
@@ -151,7 +158,7 @@ while True:
             good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
             best = max(scores) if scores else 0.0
             total = time.time() - t0
-            log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof={'on' if spoof.net else 'off'} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
+            log(f"{time.strftime('%H:%M:%S')} user={user} total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof_rejected={spoofs_rejected} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
             win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
         except Exception as scan_err:
             log(f"{time.strftime('%H:%M:%S')} scan error: {scan_err}")
