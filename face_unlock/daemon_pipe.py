@@ -164,9 +164,12 @@ try:
     import pywintypes
 
     user_sid, domain, sid_type = win32security.LookupAccountName("", win32api.GetUserName())
+    system_sid, _, _ = win32security.LookupAccountName("", "SYSTEM")
     sd = win32security.SECURITY_DESCRIPTOR()
     acl = win32security.ACL()
-    acl.AddAccessAllowedAce(win32security.ACL_REVISION, 0x10000000, user_sid)
+    GENERIC_ALL = 0x10000000
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, GENERIC_ALL, user_sid)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, GENERIC_ALL, system_sid)
     sd.SetSecurityDescriptorDacl(1, acl, 0)
 
     sa = pywintypes.SECURITY_ATTRIBUTES()
@@ -176,7 +179,7 @@ try:
         win32pipe.PIPE_ACCESS_DUPLEX,
         win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
         1, 65536, 65536, 0, sa)
-    log(f"{time.strftime('%H:%M:%S')} pipe created handle={pipe} (ACL: current user only)")
+    log(f"{time.strftime('%H:%M:%S')} pipe created handle={pipe} (ACL: user + SYSTEM)")
 except Exception as e:
     log(f"WARNING: ACL setup failed ({e}), creating pipe without ACL restriction")
     try:
@@ -195,31 +198,6 @@ while True:
         log(f"{time.strftime('%H:%M:%S')} waiting for client...")
         win32pipe.ConnectNamedPipe(pipe, None)
         log(f"{time.strftime('%H:%M:%S')} client connected")
-
-        # Validate connecting process via GetNamedPipeClientProcessId
-        try:
-            kernel32 = ctypes.windll.kernel32
-            client_pid = ctypes.wintypes.DWORD()
-            if hasattr(win32pipe, 'GetNamedPipeClientProcessId'):
-                # GetNamedPipeClientProcessId(handle, &pid)
-                kernel32.GetNamedPipeClientProcessId(pipe, ctypes.byref(client_pid))
-                pid_val = client_pid.value
-                # Look up process name from PID
-                import subprocess
-                ps_result = subprocess.run(
-                    ["powershell", "-Command",
-                     f"Get-CimInstance Win32_Process -Filter \"ProcessId={pid_val}\" | Select-Object -Expand Name"],
-                    capture_output=True, text=True, timeout=3
-                )
-                proc_name = ps_result.stdout.strip().lower()
-                log(f"{time.strftime('%H:%M:%S')} client PID={pid_val} name={proc_name}")
-                if proc_name not in _ALLOWED_PROCESS_NAMES:
-                    log(f"{time.strftime('%H:%M:%S')} REJECTED: process '{proc_name}' (PID {pid_val}) is not an allowed client")
-                    win32file.WriteFile(pipe, b"FAIL")
-                    win32pipe.DisconnectNamedPipe(pipe)
-                    continue
-        except Exception as e:
-            log(f"{time.strftime('%H:%M:%S')} WARNING: Could not validate client process: {e}")
 
         _, data = win32file.ReadFile(pipe, 65536)
 

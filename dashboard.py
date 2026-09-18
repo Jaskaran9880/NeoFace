@@ -221,7 +221,7 @@ def get_status():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", api_key=API_KEY)
 
 
 @app.route("/api/status")

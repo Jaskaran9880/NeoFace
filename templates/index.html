@@ -450,8 +450,11 @@
         if (renderers[tab]) renderers[tab]();
     }
 
+    const API_KEY = "{{ api_key }}";
+
     async function api(url, opts = {}) {
-        try { const r = await fetch(url, opts); return await r.json(); } catch(e) { return {error: e.message}; }
+        const sep = url.includes('?') ? '&' : '?';
+        try { const r = await fetch(url + sep + 'key=' + API_KEY, opts); return await r.json(); } catch(e) { return {error: e.message}; }
     }
 
     function dot(ok) { return `<span class="status-dot ${ok ? 'green' : 'red'}"></span>`; }
