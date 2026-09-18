@@ -24,6 +24,7 @@ cp/*.exp
 cp/*.dll
 .vs/
 .env
+.dashboard_key
 *.swp
 *.swo
 ~$*
