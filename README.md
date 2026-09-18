@@ -85,6 +85,7 @@ C:\NeoFace\
     store.py            - DPAPI encrypted face gallery
     matcher.py          - Cosine similarity scoring
     camera.py           - DSHOW camera with MJPG codec
+    antispoof.py        - SpoofGate anti-spoofing (optional model)
   cp/
     dllmain.cpp         - C++ DLL entry + COM factory
     provider.cpp        - Credential Provider (tile UI)
@@ -111,6 +112,7 @@ C:\NeoFace\
 
 - **Detection**: YuNet (OpenCV DNN, CPU-optimized)
 - **Recognition**: SFace (OpenCV FaceRecognizerSF)
+- **Anti-spoofing**: SpoofGate (ONNX, optional — rejects photo/video replays when model available)
 - **Gallery**: Variable-length vectors, NF02 format, DPAPI encrypted
 - **Pipe protocol**: Message-mode named pipe (`\\.\pipe\NeoFace`)
 - **Lock screen tile**: C++ Credential Provider (registered via COM + regsvr32)
@@ -119,9 +121,8 @@ C:\NeoFace\
 ## Known limitations
 
 - Camera requires user session (Windows blocks SYSTEM access at login screen)
-- Face scan runs after PIN login (not at cold-boot login screen)
+- PIN required once per boot/wake; face unlock available for all subsequent locks
 - Keep PIN enabled as backup
-- No anti-spoofing in v1 (passive liveness deferred to v2)
 
 ## Troubleshooting
 
