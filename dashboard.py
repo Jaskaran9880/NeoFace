@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import time
+import secrets
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 os.chdir(ROOT)
@@ -12,7 +13,80 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__, template_folder=os.path.join(ROOT, "templates"))
 
+# --- Authentication ---
+# Dashboard API key: set NEOFACE_API_KEY env var, or it's auto-generated and
+# written to NEOFACE_KEY_FILE on first launch so it persists across restarts.
+NEOFACE_KEY_FILE = os.path.join(ROOT, ".dashboard_key")
+
+def _load_or_create_api_key():
+    """Return the dashboard API key, creating one if it doesn't exist."""
+    if os.path.exists(NEOFACE_KEY_FILE):
+        try:
+            with open(NEOFACE_KEY_FILE, "r") as f:
+                key = f.read().strip()
+                if key:
+                    return key
+        except Exception:
+            pass
+    key = secrets.token_urlsafe(32)
+    try:
+        with open(NEOFACE_KEY_FILE, "w") as f:
+            f.write(key)
+    except Exception:
+        pass
+    return key
+
+API_KEY = os.environ.get("NEOFACE_API_KEY") or _load_or_create_api_key()
+
+
+def require_api_key(f):
+    """Decorator: require ?key=... or X-API-Key header on every /api/* route.
+    Includes rate limiting: after 5 failed attempts from an IP, return 429 for 60s.
+    """
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        ip = request.remote_addr or "unknown"
+        if not _check_rate_limit(ip):
+            return jsonify({"error": "Too many failed attempts. Try again in 60 seconds."}), 429
+        provided = request.args.get("key") or request.headers.get("X-API-Key")
+        if not provided or not secrets.compare_digest(provided, API_KEY):
+            _record_auth_failure(ip)
+            return jsonify({"error": "Unauthorized - provide ?key= parameter or X-API-Key header"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
+# --- Rate Limiting ---
+# Simple in-memory rate limiter for failed auth attempts per IP.
+# After _RATE_LIMIT_MAX failures, the IP is blocked for _RATE_LIMIT_WINDOW seconds.
+_RATE_LIMIT_MAX = 5
+_RATE_LIMIT_WINDOW = 60  # seconds
+_rate_limit_failures = {}  # ip -> [list of failure timestamps]
+
+
+def _check_rate_limit(ip):
+    """Return True if request is allowed, False if rate-limited."""
+    now = time.time()
+    if ip not in _rate_limit_failures:
+        return True
+    # Prune old entries outside the window
+    _rate_limit_failures[ip] = [t for t in _rate_limit_failures[ip] if now - t < _RATE_LIMIT_WINDOW]
+    if not _rate_limit_failures[ip]:
+        del _rate_limit_failures[ip]
+        return True
+    return len(_rate_limit_failures[ip]) < _RATE_LIMIT_MAX
+
+
+def _record_auth_failure(ip):
+    """Record a failed auth attempt for the given IP."""
+    now = time.time()
+    if ip not in _rate_limit_failures:
+        _rate_limit_failures[ip] = []
+    _rate_limit_failures[ip].append(now)
+
 PHOTOS_DIR = os.path.join(ROOT, "photos")
+PHOTO_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
 LOGS_DIR = r"C:\ProgramData\NeoFace"
 DAEMON_LOG = os.path.join(LOGS_DIR, "daemon.log")
 CP_LOG = os.path.join(LOGS_DIR, "cp.log")
@@ -110,25 +184,27 @@ def index():
 
 
 @app.route("/api/status")
+@require_api_key
 def api_status():
     return jsonify(get_status())
 
 
 @app.route("/api/health")
+@require_api_key
 def api_health():
     return jsonify({"status": "ok", "version": "0.4.0"})
 
 
 @app.route("/api/photos")
+@require_api_key
 def api_photos():
-    photo_exts = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
     photos = []
     try:
         files = os.listdir(PHOTOS_DIR)
     except PermissionError:
         return jsonify({"error": "Permission denied", "photos": []}), 403
     for f in sorted(files):
-        if f.lower().endswith(photo_exts):
+        if f.lower().endswith(PHOTO_EXTS):
             path = os.path.join(PHOTOS_DIR, f)
             try:
                 size = os.path.getsize(path)
@@ -139,6 +215,7 @@ def api_photos():
 
 
 @app.route("/api/photos/upload", methods=["POST"])
+@require_api_key
 def api_photos_upload():
     if "files" not in request.files:
         return jsonify({"error": "No files provided"}), 400
@@ -150,13 +227,22 @@ def api_photos_upload():
             if not name:
                 continue
             ext = os.path.splitext(name)[1].lower()
-            if ext in (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp"):
-                f.save(os.path.join(PHOTOS_DIR, name))
+            if ext in PHOTO_EXTS:
+                dest = os.path.join(PHOTOS_DIR, name)
+                # Prevent overwrite: add numeric suffix if file already exists
+                if os.path.exists(dest):
+                    base, extension = os.path.splitext(name)
+                    counter = 1
+                    while os.path.exists(os.path.join(PHOTOS_DIR, f"{base}_{counter}{extension}")):
+                        counter += 1
+                    dest = os.path.join(PHOTOS_DIR, f"{base}_{counter}{extension}")
+                f.save(dest)
                 saved += 1
     return jsonify({"saved": saved})
 
 
 @app.route("/api/photos/<name>", methods=["DELETE"])
+@require_api_key
 def api_photos_delete(name):
     safe_name = secure_filename(name)
     if not safe_name or safe_name != name:
@@ -169,6 +255,7 @@ def api_photos_delete(name):
 
 
 @app.route("/api/photos/<name>/thumb")
+@require_api_key
 def api_photo_thumb(name):
     safe_name = secure_filename(name)
     if not safe_name or safe_name != name:
@@ -199,17 +286,18 @@ def api_photo_thumb(name):
 
 
 @app.route("/api/photos/clear", methods=["POST"])
+@require_api_key
 def api_photos_clear():
-    photo_exts = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
     deleted = 0
     for f in os.listdir(PHOTOS_DIR):
-        if f.lower().endswith(photo_exts):
+        if f.lower().endswith(PHOTO_EXTS):
             os.remove(os.path.join(PHOTOS_DIR, f))
             deleted += 1
     return jsonify({"deleted": deleted})
 
 
 @app.route("/api/enroll", methods=["POST"])
+@require_api_key
 def api_enroll():
     try:
         result = subprocess.run(
@@ -234,6 +322,7 @@ def api_enroll():
 
 
 @app.route("/api/settings", methods=["GET"])
+@require_api_key
 def api_settings_get():
     settings = {
         "threshold": 0.35,
@@ -269,27 +358,53 @@ def api_settings_get():
 
 
 @app.route("/api/settings", methods=["POST"])
+@require_api_key
 def api_settings_save():
     data = request.get_json()
     if not data:
         return jsonify({"error": "No data"}), 400
+
+    # Validate all inputs are numeric to prevent TOML injection
+    try:
+        image_size = int(data.get('image_size', 320))
+        frames = int(data.get('frames', 3))
+        hit_required = int(data.get('hit_required', 2))
+        threshold = float(data.get('threshold', 0.35))
+        camera_index = int(data.get('camera_index', 0))
+        camera_width = int(data.get('camera_width', 640))
+        camera_height = int(data.get('camera_height', 480))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid settings values - all must be numeric"}), 400
+
+    # Validate ranges
+    if not (0.0 <= threshold <= 1.0):
+        return jsonify({"error": "threshold must be between 0.0 and 1.0"}), 400
+    if not (1 <= frames <= 30):
+        return jsonify({"error": "frames must be between 1 and 30"}), 400
+    if not (1 <= hit_required <= frames):
+        return jsonify({"error": "hit_required must be between 1 and frames"}), 400
+    if not (128 <= image_size <= 1024):
+        return jsonify({"error": "image_size must be between 128 and 1024"}), 400
+    if not (0 <= camera_index <= 10):
+        return jsonify({"error": "camera_index must be between 0 and 10"}), 400
+
     content = f"""[engine]
 backend = "fast"
 
 [fast]
 detector = "models/yunet.onnx"
 recognizer = "models/sface.onnx"
-image_size = {data.get('image_size', 320)}
-frames = {data.get('frames', 3)}
-hit_required = {data.get('hit_required', 2)}
+image_size = {image_size}
+frames = {frames}
+hit_required = {hit_required}
 
 [match]
-cosine_threshold = {data.get('threshold', 0.35)}
+cosine_threshold = {threshold}
 
 [camera]
-index = {data.get('camera_index', 0)}
-width = {data.get('camera_width', 640)}
-height = {data.get('camera_height', 480)}
+index = {camera_index}
+width = {camera_width}
+height = {camera_height}
 fps = 30
 codec = "MJPG"
 backend = "DSHOW"
@@ -305,14 +420,29 @@ enabled = false
 tick_seconds = 45
 idle_timeout = 60
 """
-    with open(CONFIG_FILE, "w") as f:
-        f.write(content)
+    # Atomic write: write to temp file first, then use os.replace() for consistency
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(CONFIG_FILE), suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(content)
+        os.replace(tmp_path, CONFIG_FILE)
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return jsonify({"saved": True})
 
 
 @app.route("/api/logs")
+@require_api_key
 def api_logs():
     log_type = request.args.get("type", "daemon")
+    if log_type not in ("daemon", "cp"):
+        return jsonify({"error": "Invalid log type - must be 'daemon' or 'cp'"}), 400
     try:
         lines = max(1, min(1000, int(request.args.get("lines", 100))))
     except (ValueError, TypeError):
@@ -327,9 +457,12 @@ def api_logs():
 
 
 @app.route("/api/logs/clear", methods=["POST"])
+@require_api_key
 def api_logs_clear():
     data = request.get_json(silent=True) or {}
     log_type = data.get("type", "daemon")
+    if log_type not in ("daemon", "cp"):
+        return jsonify({"error": "Invalid log type - must be 'daemon' or 'cp'"}), 400
     log_file = DAEMON_LOG if log_type == "daemon" else CP_LOG
     if os.path.exists(log_file):
         with open(log_file, "w") as f:
@@ -338,6 +471,7 @@ def api_logs_clear():
 
 
 @app.route("/api/test-scan", methods=["POST"])
+@require_api_key
 def api_test_scan():
     try:
         import cv2
@@ -415,6 +549,7 @@ def api_test_scan():
 
 
 @app.route("/api/setup/models", methods=["POST"])
+@require_api_key
 def api_setup_models():
     try:
         result = subprocess.run(
@@ -428,6 +563,7 @@ def api_setup_models():
 
 
 @app.route("/api/setup/password", methods=["POST"])
+@require_api_key
 def api_setup_password():
     data = request.get_json()
     password = data.get("password", "")
@@ -446,6 +582,7 @@ def api_setup_password():
 
 
 @app.route("/api/setup/daemon", methods=["POST"])
+@require_api_key
 def api_setup_daemon():
     try:
         ps_cmd = """
@@ -470,6 +607,7 @@ Write-Host "OK"
 
 
 @app.route("/api/daemon/start", methods=["POST"])
+@require_api_key
 def api_daemon_start():
     try:
         subprocess.run(
@@ -482,6 +620,7 @@ def api_daemon_start():
 
 
 @app.route("/api/daemon/stop", methods=["POST"])
+@require_api_key
 def api_daemon_stop():
     try:
         subprocess.run(
@@ -495,6 +634,7 @@ def api_daemon_stop():
 
 
 @app.route("/api/troubleshoot/<component>", methods=["POST"])
+@require_api_key
 def api_troubleshoot(component):
     results = {}
 
@@ -582,6 +722,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("  NeoFace Dashboard")
     print("  http://localhost:8080")
+    print("  API key loaded from .dashboard_key")
+    print("  Use ?key=<key> or header X-API-Key: <key>")
     print("  Press Ctrl+C to stop")
     print("=" * 50)
     app.run(host="127.0.0.1", port=8080, debug=False)
