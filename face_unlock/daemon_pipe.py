@@ -51,35 +51,53 @@ def _read_config():
 
 def _detect_camera():
     global CAMERA_INDEX
-    try:
-        cam = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        time.sleep(0.5)
-        cam.grab()
-        ok, frame = cam.read()
-        cam.release()
-        if ok and frame.mean() > 5:
-            return
-    except Exception:
-        pass
-    for i in range(4):
+
+    def _is_real_camera(idx):
+        """Open camera, grab frames, and check if face detection finds a face.
+        Virtual cameras (OBS, etc.) return static images with no faces."""
         try:
-            cam = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            cam = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
             cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            time.sleep(1)
+            # Drain stale buffers
+            for _ in range(5):
+                cam.grab()
             time.sleep(0.5)
-            cam.grab()
             ok, frame = cam.read()
             cam.release()
-            if ok and frame.mean() > 5:
-                CAMERA_INDEX = i
-                log(f"auto-detected working camera: index {i}")
-                return
-        except Exception:
+            if not ok:
+                return False
+            if frame.mean() < 5:
+                return False  # Black frame
+            # Check face detection — virtual cameras produce static logo images with no faces
+            h, w = frame.shape[:2]
+            engine.det.setInputSize((w, h))
+            _, faces = engine.det.detect(frame)
+            if faces is not None and len(faces) > 0:
+                return True
+            log(f"camera {idx}: frame OK but no faces detected (likely virtual camera)")
+            return False
+        except Exception as e:
+            log(f"camera {idx}: test failed: {e}")
+            return False
+
+    # Test current CAMERA_INDEX first
+    if _is_real_camera(CAMERA_INDEX):
+        log(f"using configured camera index {CAMERA_INDEX}")
+        return
+
+    # Scan for a working camera
+    for i in range(4):
+        if i == CAMERA_INDEX:
             continue
-    log(f"WARNING: no working camera found, using index {CAMERA_INDEX}")
+        if _is_real_camera(i):
+            CAMERA_INDEX = i
+            log(f"auto-detected working camera: index {i}")
+            return
+
+    log(f"WARNING: no working camera with face detection found, using index {CAMERA_INDEX}")
 
 _read_config()
-_detect_camera()
 
 # Allowed connecting processes: dashboard.py and explorer.exe
 _ALLOWED_PROCESS_NAMES = {"dashboard.py", "explorer.exe", "python.exe", "pythonw.exe"}
@@ -92,6 +110,7 @@ for name, path in [("yunet", "models/yunet.onnx"), ("sface", "models/sface.onnx"
 engine = FastEngine(os.path.join(ROOT, "models", "yunet.onnx"),
                     os.path.join(ROOT, "models", "sface.onnx"))
 engine.load()
+_detect_camera()
 gallery = Gallery(r"C:\ProgramData\NeoFace\faces_fast.dat")
 gallery.load()
 gallery_mtime = os.path.getmtime(gallery.path) if os.path.exists(gallery.path) else 0
