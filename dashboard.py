@@ -100,8 +100,13 @@ os.makedirs(PHOTOS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 
+_camera_index_cache = None
+
 def _get_camera_index():
-    """Read camera index from config, auto-detect if missing or broken."""
+    """Read camera index from config, auto-detect if missing or broken. Cached after first success."""
+    global _camera_index_cache
+    if _camera_index_cache is not None:
+        return _camera_index_cache
     idx = 0
     try:
         with open(CONFIG_FILE) as f:
@@ -121,6 +126,7 @@ def _get_camera_index():
         ok, frame = cam.read()
         cam.release()
         if ok and frame.mean() > 5:
+            _camera_index_cache = idx
             return idx
     except Exception:
         pass
@@ -135,9 +141,11 @@ def _get_camera_index():
             ok, frame = cam.read()
             cam.release()
             if ok and frame.mean() > 5:
+                _camera_index_cache = i
                 return i
         except Exception:
             continue
+    _camera_index_cache = idx
     return idx
 
 
@@ -538,7 +546,8 @@ def api_test_scan():
         if not cam.isOpened():
             return jsonify({"error": "Camera not available"}), 500
 
-        for _ in range(2):
+        time.sleep(1.5)
+        for _ in range(5):
             cam.read()
         time.sleep(0.05)
 
@@ -551,8 +560,8 @@ def api_test_scan():
                 continue
             frames += 1
             h, w = f.shape[:2]
-            if w > 320:
-                f = cv2.resize(f, (320, int(h * 320 / w)))
+            if w > 640:
+                f = cv2.resize(f, (640, int(h * 640 / w)))
             emb, face = engine.embed(f)
             if face is not None:
                 faces += 1

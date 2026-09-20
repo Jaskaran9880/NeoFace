@@ -122,7 +122,8 @@ class Cam:
         self.running = True
         self._thread = threading.Thread(target=self._grab, daemon=True)
         self._thread.start()
-        for _ in range(WARMUP):
+        time.sleep(1)
+        for _ in range(5):
             self.cap.read()
         time.sleep(0.05)
 
