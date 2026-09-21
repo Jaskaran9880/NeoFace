@@ -165,8 +165,9 @@ def _find_daemon_pids():
 def get_status():
     status = {}
 
-    py_files = ["models/yunet.onnx", "models/sface.onnx"]
-    status["models"] = {"yunet": os.path.exists(os.path.join(ROOT, f)) for f in py_files}
+    model_files = ["models/yunet.onnx", "models/sface.onnx", "models/antifas_v2.onnx"]
+    status["models"] = {"yunet": os.path.exists(os.path.join(ROOT, f)) for f in model_files}
+    status["models"]["antispoof"] = os.path.exists(os.path.join(ROOT, "models/antifas_v2.onnx"))
     status["models"]["all"] = all(status["models"].values())
 
     status["gallery"] = os.path.exists(GALLERY_FAST)

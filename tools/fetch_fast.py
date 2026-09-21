@@ -6,6 +6,7 @@ BASE = os.path.abspath(BASE)
 URLS = {
     "yunet.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     "sface.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    "antifas_v2.onnx": "https://huggingface.co/garciafido/minifasnet-v2-anti-spoofing-onnx/resolve/main/2.7_80x80_MiniFASNetV2.onnx",
 }
 
 os.makedirs(BASE, exist_ok=True)
