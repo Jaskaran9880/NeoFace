@@ -463,10 +463,14 @@
     // ======================== SETUP ========================
     async function renderSetup() {
         const s = await api('/api/status');
+        const coreOk = s.models.yunet && s.models.sface;
+        const antiOk = s.models.antispoof;
+        const allModels = coreOk && antiOk;
         const items = [
             { label: 'Python packages', ok: true, desc: 'All dependencies installed' },
-            { label: 'AI models (core)', ok: s.models.yunet && s.models.sface, desc: (s.models.yunet && s.models.sface) ? 'YuNet + SFace ready' : 'Not downloaded', action: (s.models.yunet && s.models.sface) ? null : 'download-models', btn: 'Download' },
-            { label: 'Anti-spoof model', ok: s.models.antispoof, desc: s.models.antispoof ? 'SpoofGate ready' : 'Not downloaded (required for security)', action: s.models.antispoof ? null : 'download-models', btn: 'Download' },
+            { label: 'YuNet (face detection)', ok: s.models.yunet, desc: s.models.yunet ? 'Ready (232KB)' : 'Not downloaded' },
+            { label: 'SFace (face recognition)', ok: s.models.sface, desc: s.models.sface ? 'Ready (37MB)' : 'Not downloaded' },
+            { label: 'SpoofGate (anti-spoof)', ok: antiOk, desc: antiOk ? 'Ready (1.7MB)' : 'Not downloaded - required for security' },
             { label: 'Face photos', ok: s.photos.count > 0, desc: `${s.photos.count} photos enrolled`, link: 'photos' },
             { label: 'Face gallery', ok: s.gallery, desc: s.gallery ? `${s.gallery_templates} templates` : 'Not enrolled', action: s.gallery ? null : 'enroll', btn: 'Enroll' },
             { label: 'Password vault', ok: s.vault, desc: s.vault ? 'Encrypted' : 'Not set', action: s.vault ? null : 'password', btn: 'Setup', input: !s.vault },
@@ -484,6 +488,13 @@
             <div class="progress-track" style="margin-bottom:24px">
                 <div class="progress-fill ${allDone ? 'green' : 'blue'}" style="width:${(done/items.length)*100}%"></div>
             </div>
+            ${!allModels ? `<div style="margin-bottom:16px;padding:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:8px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <span style="color:#fbbf24;font-weight:600">Models Required</span>
+                </div>
+                <p style="color:#94a3b8;font-size:13px;margin:0 0 12px 0">Download all AI models needed for face recognition and anti-spoofing.</p>
+                <button onclick="setupAction('download-models')" class="glass-btn btn-primary btn-sm" id="download-all-btn">Download All Models</button>
+            </div>` : ''}
             <div style="display:flex;flex-direction:column;gap:6px">`;
 
         items.forEach(i => {
@@ -494,7 +505,7 @@
                     <span class="detail-text">${i.desc}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px">
-                    ${i.ok ? '<span class="badge badge-green">Installed</span>' : ''}
+                    ${i.ok ? '<span class="badge badge-green">Ready</span>' : ''}
                     ${i.link ? `<button onclick="switchTab('${i.link}')" class="glass-btn btn-ghost btn-sm">View</button>` : ''}
                     ${i.action ? `<button onclick="setupAction('${i.action}')" class="glass-btn btn-primary btn-sm">${i.btn}</button>` : ''}
                     ${i.input ? '<input id="pw-input" type="password" placeholder="Windows password" class="glass-input" style="width:180px;padding:7px 12px;font-size:12px">' : ''}
@@ -513,9 +524,23 @@
             const r = await api('/api/setup/password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw}) });
             alert(r.success ? 'Password vault created!' : 'Error: ' + (r.error || 'unknown'));
         } else if (action === 'download-models') {
-            alert('Downloading models... this may take a minute.');
-            const r = await api('/api/setup/models', { method: 'POST' });
-            alert(r.success ? 'Models downloaded!' : 'Error: ' + (r.error || 'unknown'));
+            const btn = document.querySelector(`[onclick="setupAction('download-models')"]`);
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const r = await api('/api/setup/models', { method: 'POST' });
+                if (r.success) {
+                    alert('All models downloaded successfully!');
+                } else {
+                    const missing = [];
+                    if (r.models && !r.models.yunet) missing.push('YuNet');
+                    if (r.models && !r.models.sface) missing.push('SFace');
+                    if (r.models && !r.models.antispoof) missing.push('Anti-spoof');
+                    alert('Download complete but some models missing: ' + (missing.join(', ') || 'unknown') + '\n\nOutput:\n' + (r.output || ''));
+                }
+            } catch (e) {
+                alert('Download failed: ' + e.message);
+            }
+            if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
         } else if (action === 'enroll') {
             alert('Enrolling faces from photos...');
             const r = await api('/api/enroll', { method: 'POST' });
@@ -682,10 +707,15 @@
     // ======================== STATUS ========================
     async function renderStatus() {
         const s = await api('/api/status');
+        const modelParts = [];
+        if (s.models.yunet) modelParts.push('YuNet');
+        if (s.models.sface) modelParts.push('SFace');
+        if (s.models.antispoof) modelParts.push('SpoofGate');
+        const modelDetail = modelParts.length > 0 ? modelParts.join(' + ') : 'none';
         const items = [
             { label: 'Daemon', ok: s.daemon.running, detail: s.daemon.pid ? `PID ${s.daemon.pid}` : 'not running', action: s.daemon.running ? 'stop' : 'start', actionLabel: s.daemon.running ? 'Stop' : 'Start' },
             { label: 'Camera', ok: s.camera.available, detail: s.camera.name },
-            { label: 'AI Models', ok: s.models.all, detail: s.models.all ? 'YuNet + SFace + SpoofGate' : (s.models.antispoof ? 'SpoofGate only (core missing)' : 'anti-spoof missing') },
+            { label: 'AI Models', ok: s.models.all, detail: modelDetail },
             { label: 'Face Gallery', ok: s.gallery, detail: s.gallery ? `${s.gallery_templates} templates` : 'empty' },
             { label: 'Password Vault', ok: s.vault, detail: s.vault ? 'encrypted' : 'not set' },
             { label: 'Lock Screen DLL', ok: s.dll, detail: s.dll ? 'registered' : 'not installed' },

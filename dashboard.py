@@ -605,10 +605,15 @@ def api_setup_models():
     try:
         result = subprocess.run(
             [sys.executable, os.path.join(ROOT, "tools", "fetch_fast.py")],
-            capture_output=True, text=True, timeout=120, cwd=ROOT
+            capture_output=True, text=True, timeout=300, cwd=ROOT
         )
-        success = os.path.exists(os.path.join(ROOT, "models", "yunet.onnx"))
-        return jsonify({"success": success, "output": result.stdout + result.stderr})
+        models = {
+            "yunet": os.path.exists(os.path.join(ROOT, "models", "yunet.onnx")),
+            "sface": os.path.exists(os.path.join(ROOT, "models", "sface.onnx")),
+            "antispoof": os.path.exists(os.path.join(ROOT, "models", "antifas_v2.onnx")),
+        }
+        all_ok = all(models.values())
+        return jsonify({"success": all_ok, "models": models, "output": result.stdout + result.stderr})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
