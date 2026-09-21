@@ -27,13 +27,13 @@ class SpoofGate:
 
     def real_score(self, face_crop):
         if not self.is_loaded:
-            logger.warning("SpoofGate bypassed: anti-spoof model not loaded, returning default score 1.0")
-            return 1.0
+            logger.error("SpoofGate FAIL-CLOSED: anti-spoof model not loaded, returning 0.0 (reject)")
+            return 0.0
         try:
             blob = cv2.dnn.blobFromImage(face_crop, 1.0 / 255.0, (80, 80), (0, 0, 0), swapRB=True)
             self.net.setInput(blob)
             out = self.net.forward().flatten()
             return float(out[1] if len(out) > 1 else out[0])
         except Exception:
-            logger.warning("SpoofGate inference failed, returning default score 1.0")
-            return 1.0
+            logger.error("SpoofGate inference failed, FAIL-CLOSED returning 0.0 (reject)")
+            return 0.0

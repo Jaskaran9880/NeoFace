@@ -23,17 +23,19 @@ from face_unlock.fast import FastEngine
 from face_unlock.store import Gallery
 from face_unlock.matcher import cosine_score
 from face_unlock.antispoof import SpoofGate
+from face_unlock.liveness import LivenessChecker
 
 PIPE = r"\\.\pipe\NeoFace"
 IMG_SIZE = 320
 WARMUP = 2
 FRAMES = 3
 HIT_REQ = 2
-THRESHOLD = 0.35
+THRESHOLD = 0.50
+ANTISPOOF_THRESHOLD = 0.7
 CAMERA_INDEX = 0
 
 def _read_config():
-    global CAMERA_INDEX, FRAMES, HIT_REQ, THRESHOLD
+    global CAMERA_INDEX, FRAMES, HIT_REQ, THRESHOLD, ANTISPOOF_THRESHOLD
     try:
         with open(os.path.join(ROOT, "config.toml")) as f:
             for line in f:
@@ -46,6 +48,7 @@ def _read_config():
                 elif k == "frames": FRAMES = int(v)
                 elif k == "hit_required": HIT_REQ = int(v)
                 elif k == "cosine_threshold": THRESHOLD = float(v)
+                elif k == "antispoof_threshold": ANTISPOOF_THRESHOLD = float(v)
     except Exception:
         pass
 
@@ -115,11 +118,14 @@ gallery = Gallery(r"C:\ProgramData\NeoFace\faces_fast.dat")
 gallery.load()
 gallery_mtime = os.path.getmtime(gallery.path) if os.path.exists(gallery.path) else 0
 
-spoof = SpoofGate()
+spoof = SpoofGate(threshold=ANTISPOOF_THRESHOLD)
 if not spoof.load():
-    log("WARNING: anti-spoof model failed to load - spoof detection DISABLED (all frames will pass)")
+    log("FATAL: anti-spoof model failed to load - anti-spoof is REQUIRED for secure operation")
+    sys.exit(1)
 
-log(f"daemon loaded - {sum(len(v) for v in gallery.templates.values())} fast templates, antispoof={'on' if spoof.net else 'off'}")
+liveness = LivenessChecker()
+
+log(f"daemon loaded - {sum(len(v) for v in gallery.templates.values())} fast templates, antispoof=on (threshold={spoof.threshold}), liveness=on")
 
 class Cam:
     def __init__(self):
@@ -249,12 +255,14 @@ while True:
 
         t0 = time.time()
         try:
+            liveness.reset()
             cam.open()
             t1 = time.time()
             scores = []
             frames_ok = 0
             faces_seen = 0
             spoofs_rejected = 0
+            liveness_rejected = 0
             for _ in range(FRAMES):
                 ok, f = cam.read()
                 if not ok:
@@ -263,6 +271,13 @@ while True:
                 h, w = f.shape[:2]
                 if w > IMG_SIZE:
                     f = cv2.resize(f, (IMG_SIZE, int(h * IMG_SIZE / w)))
+                # Temporal liveness — reject static frames (photo replay)
+                gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+                liveness_score = liveness.check_temporal_consistency(gray)
+                if liveness_score < 0.5:
+                    log(f"{time.strftime('%H:%M:%S')} liveness rejected frame: score={liveness_score:.2f}")
+                    liveness_rejected += 1
+                    continue
                 emb, face = engine.embed(f)
                 if face is not None:
                     faces_seen += 1
@@ -281,7 +296,7 @@ while True:
             good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
             best = max(scores) if scores else 0.0
             total = time.time() - t0
-            log(f"{time.strftime('%H:%M:%S')} user=(redacted) total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof_rejected={spoofs_rejected} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
+            log(f"{time.strftime('%H:%M:%S')} user=(redacted) total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof_rejected={spoofs_rejected} liveness_rejected={liveness_rejected} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
             win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
         except Exception as scan_err:
             log(f"{time.strftime('%H:%M:%S')} scan error: {scan_err}")

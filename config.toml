@@ -9,7 +9,8 @@ frames = 3
 hit_required = 2
 
 [match]
-cosine_threshold = 0.35
+cosine_threshold = 0.50
+antispoof_threshold = 0.7
 
 [camera]
 index = 0
@@ -21,7 +22,7 @@ backend = "DSHOW"
 buffer_size = 1
 
 [pipe]
-name = "\\.\pipe\NeoFace"
+name = "\\\\.\\pipe\\NeoFace"
 max_instances = 1
 buffer_size = 65536
 
