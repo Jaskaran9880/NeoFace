@@ -6,9 +6,12 @@ models/*
 !models/.gitkeep
 !models/README.txt
 !models/antifas_v2.onnx
+models/models/
 dist/
 build/
 *.log
+*.onnx
+config.toml
 .face-unlock/
 photos/*.jpg
 photos/*.jpeg
