@@ -26,8 +26,8 @@ Win+L lock screen
 
 ```powershell
 # 1. Clone
-git clone https://github.com/Jaskaran9880/NeoFace.git
-cd NeoFace
+git clone https://github.com/Jaskaran9880/windows-face-unlock.git
+cd windows-face-unlock
 
 # 2. Install (run as Admin for full setup)
 .\install\install.ps1
@@ -37,8 +37,8 @@ cd NeoFace
 
 ```powershell
 # 1. Clone and install dependencies
-git clone https://github.com/Jaskaran9880/NeoFace.git
-cd NeoFace
+git clone https://github.com/Jaskaran9880/windows-face-unlock.git
+cd windows-face-unlock
 pip install -r requirements.txt
 
 # 2. Download face detection/recognition models
