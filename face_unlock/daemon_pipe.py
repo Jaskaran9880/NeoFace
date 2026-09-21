@@ -283,7 +283,7 @@ while True:
                     faces_seen += 1
                 if emb is None:
                     continue
-                real = spoof.real_score(f)
+                real = spoof.real_score(f, face_bbox=face)
                 if real < spoof.threshold:
                     log(f"{time.strftime('%H:%M:%S')} spoof rejected frame: real={real:.3f} < {spoof.threshold}")
                     spoofs_rejected += 1
