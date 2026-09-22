@@ -6,7 +6,7 @@ logger = logging.getLogger("neoface.antispoof")
 
 
 class SpoofGate:
-    def __init__(self, model_path="models/antifas_v2.onnx", threshold=0.7):
+    def __init__(self, model_path="models/antifas_v2.onnx", threshold=0.3):
         self.model_path = model_path
         self.threshold = threshold
         self.net = None
