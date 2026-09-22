@@ -466,6 +466,10 @@
     // ======================== SETUP ========================
     async function renderSetup() {
         const s = await api('/api/status');
+        if (s.error) {
+            document.getElementById('content').innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Failed to load status</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + escapeHtml(s.error) + '</p><button onclick="switchTab(\'setup\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
+            return;
+        }
         const coreOk = s.models.yunet && s.models.sface;
         const antiOk = s.models.antispoof;
         const allModels = coreOk && antiOk;
@@ -710,6 +714,10 @@
     // ======================== STATUS ========================
     async function renderStatus() {
         const s = await api('/api/status');
+        if (s.error) {
+            document.getElementById('content').innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Failed to load status</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + escapeHtml(s.error) + '</p><button onclick="switchTab(\'status\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
+            return;
+        }
         const modelParts = [];
         if (s.models.yunet) modelParts.push('YuNet');
         if (s.models.sface) modelParts.push('SFace');
