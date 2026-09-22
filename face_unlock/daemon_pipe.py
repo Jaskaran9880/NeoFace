@@ -271,11 +271,9 @@ while True:
                 h, w = f.shape[:2]
                 if w > IMG_SIZE:
                     f = cv2.resize(f, (IMG_SIZE, int(h * IMG_SIZE / w)))
-                # Temporal liveness — reject static frames (photo replay)
                 gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
                 liveness_score = liveness.check_temporal_consistency(gray)
                 if liveness_score < 0.5:
-                    log(f"{time.strftime('%H:%M:%S')} liveness rejected frame: score={liveness_score:.2f}")
                     liveness_rejected += 1
                     continue
                 emb, face = engine.embed(f)
@@ -285,7 +283,6 @@ while True:
                     continue
                 real = spoof.real_score(f, face_bbox=face)
                 if real < spoof.threshold:
-                    log(f"{time.strftime('%H:%M:%S')} spoof rejected frame: real={real:.3f} < {spoof.threshold}")
                     spoofs_rejected += 1
                     continue
                 cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
