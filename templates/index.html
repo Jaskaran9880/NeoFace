@@ -447,7 +447,10 @@
         c.innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#475569"><div class="pulse">Loading...</div></div>';
         c.className = 'fade-in';
         const renderers = { setup: renderSetup, photos: renderPhotos, settings: renderSettings, test: renderTest, status: renderStatus, troubleshoot: renderTroubleshoot, logs: renderLogs };
-        if (renderers[tab]) renderers[tab]();
+        if (renderers[tab]) renderers[tab]().catch(e => {
+            console.error('Render error:', e);
+            c.innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Something went wrong loading this section.</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + e.message + '</p><button onclick="switchTab(\'' + tab + '\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
+        });
     }
 
     const API_KEY = "{{ api_key }}";
