@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 - 2026-09-22
+- Retuned match thresholds: cosine 0.50->0.45, anti-spoof 0.7->0.3
+- Fixed dashboard model status dict so sface/antispoof keys resolve (Loading... bug)
+- Added render error handling with retry to dashboard tabs
+- Removed per-frame rejection log spam from daemon
+- Synced SpoofGate default threshold and config.example.toml with retune
+
 ## 0.4.1 - 2026-09-17
 - Wired SpoofGate anti-spoofing into daemon pipe
 - Added try/except around gallery struct parsing to handle corruption

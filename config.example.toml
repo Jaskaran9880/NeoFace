@@ -9,7 +9,7 @@ wait_timeout_s = 20
 scan_timeout_s = 10
 
 [match]
-cosine_threshold = 0.42
+cosine_threshold = 0.45
 frames = 5
 required = 3
 yaw_limit = 25
@@ -24,7 +24,7 @@ accurate_threshold = 0.42
 
 [antispoof]
 enabled = true
-minifasnet_threshold = 0.7
+minifasnet_threshold = 0.3
 
 [presence]
 enabled = false
