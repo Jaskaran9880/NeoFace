@@ -31,3 +31,4 @@ cp/*.dll
 *.swp
 *.swo
 ~$*
+debug_*.jpg
