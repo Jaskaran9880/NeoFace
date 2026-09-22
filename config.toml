@@ -10,7 +10,7 @@ hit_required = 2
 
 [match]
 cosine_threshold = 0.50
-antispoof_threshold = 0.7
+antispoof_threshold = 0.3
 
 [camera]
 index = 0
