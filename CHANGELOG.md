@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.3 - 2026-09-23
+- Credential Provider tile logo: 3-field schema with `CPFT_TILE_IMAGE` (deselected-tile logo via `GetBitmapValue`)
+- Logo assets `cp/icon.bmp` + `cp/tile.bmp` now shipped by deploy_all, register_cp, deploy_boot, and the installer
+- Dashboard header renders NeoFace logo (`static/logo.png`) instead of the letter mark
+- Synced daemon fallback thresholds with retune (cosine 0.45, anti-spoof 0.3) when config keys are missing
+- New `tools/prep_cp_logo.py` regenerates logo assets from one source image
+- New sanity checks: Python/PS1 syntax, CP field schema consistency, repo hygiene (secrets stay untracked)
+- Dashboard API test now reads `.dashboard_key` instead of a stale hardcoded key
+- Fixed config.example missing `hit_required`/`antispoof_threshold` and stale `frames = 5`
+- Docs: refreshed cp/README field schema, fixed CONTRIBUTING clone URLs, corrected SECURITY thresholds, README architecture + logo troubleshooting
+- Added `.gitattributes` for binaries/CRLF; ignore `Thumbs.db`/`Desktop.ini`
+
 ## 0.4.2 - 2026-09-22
 - Retuned match thresholds: cosine 0.50->0.45, anti-spoof 0.7->0.3
 - Fixed dashboard model status dict so sface/antispoof keys resolve (Loading... bug)
