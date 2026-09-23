@@ -6,14 +6,14 @@
 - **Gallery**: Face vectors only (128-d), DPAPI user-scope encrypted on disk.
 - **Password vault**: Windows password encrypted with DPAPI machine-scope (`cred.bin`).
 - **Named pipe**: `\\.\pipe\NeoFace` — message mode, created with default DACL.
-- **CP DLL**: Registered via COM + regsvr32, runs in LogonUI context.
-- **Daemon**: Python scheduled task, Interactive logon type, runs in user session.
+- **CP DLL**: Registered via COM + regsvr32, runs in LogonUI context. Tile logo (`icon.bmp`) is loaded from `C:\Program Files\NeoFace\` via `GetBitmapValue` (bitmap only, no code path).
+- **Daemon**: Python scheduled task, Interactive logon type, runs in user session (boot-time variant `deploy_boot.ps1` registers SYSTEM - see below).
 
 ## Threat model
 
 | Attack | Mitigation |
 |--------|------------|
-| Photo replay | Cosine threshold 0.35, multiple frames required |
+| Photo replay | Cosine threshold 0.45, anti-spoof threshold 0.3, multiple frames required |
 | Screen replay | Camera captures live frames, not screen content |
 | 3D mask | Not blocked in v1 (deferred to v2) |
 | Spoofing (photo/video) | SpoofGate anti-spoof model (when model available) |
