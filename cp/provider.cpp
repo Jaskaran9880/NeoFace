@@ -38,16 +38,18 @@ HRESULT NeoFaceProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpu
 HRESULT NeoFaceProvider::SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION*) { return S_OK; }
 HRESULT NeoFaceProvider::Advise(ICredentialProviderEvents*, UINT_PTR) { return S_OK; }
 HRESULT NeoFaceProvider::UnAdvise() { return S_OK; }
-HRESULT NeoFaceProvider::GetFieldDescriptorCount(DWORD *n) { *n = 2; return S_OK; }
+HRESULT NeoFaceProvider::GetFieldDescriptorCount(DWORD *n) { *n = 3; return S_OK; }
 HRESULT NeoFaceProvider::GetFieldDescriptorAt(DWORD i, CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR **p) {
-    if (i > 1) return E_INVALIDARG;
+    if (i > 2) return E_INVALIDARG;
     CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR *d = (CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR*)CoTaskMemAlloc(sizeof(CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR));
     if (!d) return E_OUTOFMEMORY;
     d->dwFieldID = i;
     d->pszLabel = NULL;
     d->guidFieldType = GUID_NULL;
     if (i == 0) {
-        d->cpft = CPFT_LARGE_TEXT;
+        d->cpft = CPFT_TILE_IMAGE;      // full banner on tile
+    } else if (i == 1) {
+        d->cpft = CPFT_LARGE_TEXT;      // status text
     } else {
         d->cpft = CPFT_SUBMIT_BUTTON;
         SHStrDupW(L"Unlock with face", &d->pszLabel);

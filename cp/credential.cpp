@@ -29,14 +29,16 @@ HRESULT NeoFaceCredential::SetSelected(BOOL *a) { *a = FALSE; return S_OK; }
 HRESULT NeoFaceCredential::SetDeselected() { return S_OK; }
 
 HRESULT NeoFaceCredential::GetFieldState(DWORD id, CREDENTIAL_PROVIDER_FIELD_STATE *s, CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE *i) {
-    if (id == 0) { *s = CPFS_DISPLAY_IN_BOTH; *i = CPFIS_NONE; return S_OK; }
-    if (id == 1) { *s = CPFS_DISPLAY_IN_SELECTED_TILE; *i = CPFIS_NONE; return S_OK; }
+    if (id == 0) { *s = CPFS_DISPLAY_IN_DESELECTED_TILE; *i = CPFIS_NONE; return S_OK; }
+    if (id == 1) { *s = CPFS_DISPLAY_IN_BOTH; *i = CPFIS_NONE; return S_OK; }
+    if (id == 2) { *s = CPFS_DISPLAY_IN_SELECTED_TILE; *i = CPFIS_NONE; return S_OK; }
     return E_INVALIDARG;
 }
 
 HRESULT NeoFaceCredential::GetStringValue(DWORD id, LPWSTR *v) {
-    if (id == 0) return SHStrDupW(L"NeoFace - look at camera, then click below", v);
-    if (id == 1) return SHStrDupW(L"Unlock with face", v);
+    if (id == 1) return SHStrDupW(L"NeoFace - look at camera, then click below", v);
+    if (id == 2) return SHStrDupW(L"Unlock with face", v);
+    if (id == 0) return E_NOTIMPL; // bitmap field (tile image)
     return E_INVALIDARG;
 }
 
@@ -52,8 +54,8 @@ HRESULT NeoFaceCredential::GetBitmapValue(DWORD id, HBITMAP *phbmp) {
 }
 
 HRESULT NeoFaceCredential::GetSubmitButtonValue(DWORD id, DWORD *adjacent) {
-    if (id != 1) return E_INVALIDARG;
-    *adjacent = 0;
+    if (id != 2) return E_INVALIDARG;
+    *adjacent = 1; // status text field
     return S_OK;
 }
 
