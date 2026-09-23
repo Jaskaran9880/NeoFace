@@ -17,6 +17,8 @@ $src = Join-Path $ROOT "cp\FaceUnlockCP.dll"
 $dstDir = "C:\Program Files\NeoFace"
 New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
 Copy-Item $src "$dstDir\FaceUnlockCP.dll" -Force
+Copy-Item (Join-Path $ROOT "cp\icon.bmp") "$dstDir\icon.bmp" -Force
+Copy-Item (Join-Path $ROOT "cp\tile.bmp") "$dstDir\tile.bmp" -Force
 regsvr32 /s "$dstDir\FaceUnlockCP.dll"
 $guid = "{8F3B2C1D-4E5A-4B7C-9D1F-2A3B4C5D6E7F}"
 New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$guid" -Force | Out-Null
