@@ -32,3 +32,5 @@ cp/*.dll
 *.swo
 ~$*
 debug_*.jpg
+Thumbs.db
+Desktop.ini
