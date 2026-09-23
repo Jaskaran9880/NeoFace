@@ -13,6 +13,10 @@ Start-Sleep 2
 # Deploy DLL
 Write-Host "[2/3] Deploying DLL..."
 Copy-Item "C:\NeoFace\cp\FaceUnlockCP.dll" "C:\Program Files\NeoFace\FaceUnlockCP.dll" -Force
+foreach ($bmp in @("icon.bmp", "tile.bmp")) {
+    $logo = Join-Path "C:\NeoFace\cp" $bmp
+    if (Test-Path $logo) { Copy-Item $logo (Join-Path "C:\Program Files\NeoFace" $bmp) -Force }
+}
 regsvr32 /s "C:\Program Files\NeoFace\FaceUnlockCP.dll"
 
 # Install daemon as SYSTEM at boot (runs before any user logs in)
