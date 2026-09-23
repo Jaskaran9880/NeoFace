@@ -1,0 +1,41 @@
+# Binary assets - never normalize line endings or attempt text diffs
+*.bmp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.onnx binary
+*.dll binary
+*.lib binary
+*.exp binary
+*.obj binary
+*.bin binary
+*.dat binary
+*.heic binary
+*.webp binary
+*.zip binary
+*.ttf binary
+*.woff binary
+
+# Scripts and sources check out as CRLF (matches .editorconfig end_of_line = crlf)
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.cpp text eol=crlf
+*.h text eol=crlf
+*.psd1 text eol=crlf
+
+# Everything else: normalize on commit, let autocrlf govern the working copy
+*.py text
+*.md text
+*.toml text
+*.yml text
+*.yaml text
+*.json text
+*.html text
+*.css text
+*.js text
+*.txt text
+*.def text
