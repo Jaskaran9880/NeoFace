@@ -1,3 +1,8 @@
+# NeoFace example config.
+# face_unlock/daemon_pipe.py reads these keys (flat match, any section):
+#   index, frames, hit_required, cosine_threshold, antispoof_threshold
+# Keep them present or the daemon falls back to its built-in defaults.
+
 [camera]
 index = 0
 width = 1280
@@ -10,7 +15,9 @@ scan_timeout_s = 10
 
 [match]
 cosine_threshold = 0.45
-frames = 5
+antispoof_threshold = 0.3
+frames = 3
+hit_required = 2
 required = 3
 yaw_limit = 25
 pitch_limit = 20
