@@ -40,6 +40,17 @@ HRESULT NeoFaceCredential::GetStringValue(DWORD id, LPWSTR *v) {
     return E_INVALIDARG;
 }
 
+HRESULT NeoFaceCredential::GetBitmapValue(DWORD id, HBITMAP *phbmp) {
+    if (!phbmp) return E_INVALIDARG;
+    *phbmp = NULL;
+    if (id != 0) return E_INVALIDARG;
+    const WCHAR *path = L"C:\\Program Files\\NeoFace\\icon.bmp";
+    *phbmp = (HBITMAP)LoadImageW(NULL, path, IMAGE_BITMAP, 0, 0,
+        LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+    if (!*phbmp) return E_FAIL;
+    return S_OK;
+}
+
 HRESULT NeoFaceCredential::GetSubmitButtonValue(DWORD id, DWORD *adjacent) {
     if (id != 1) return E_INVALIDARG;
     *adjacent = 0;
