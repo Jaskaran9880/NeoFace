@@ -103,6 +103,13 @@ if (!(Test-Path $dllPath) -or (Get-Item $builtDll -ErrorAction SilentlyContinue)
     }
 } else {
     Write-Host "  DLL already deployed" -ForegroundColor Green
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        New-Item -ItemType Directory -Path "C:\Program Files\NeoFace" -Force | Out-Null
+        foreach ($bmp in @("icon.bmp", "tile.bmp")) {
+            if (Test-Path "$ROOT\cp\$bmp") { Copy-Item "$ROOT\cp\$bmp" "C:\Program Files\NeoFace\$bmp" -Force }
+        }
+    }
 }
 
 # --- Step 7: Install daemon ---
