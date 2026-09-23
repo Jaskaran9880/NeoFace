@@ -89,6 +89,8 @@ if (!(Test-Path $dllPath) -or (Get-Item $builtDll -ErrorAction SilentlyContinue)
         if (Test-Path $builtDll) {
             New-Item -ItemType Directory -Path "C:\Program Files\NeoFace" -Force | Out-Null
             Copy-Item $builtDll $dllPath -Force
+            Copy-Item "$ROOT\cp\icon.bmp" "C:\Program Files\NeoFace\icon.bmp" -Force
+            Copy-Item "$ROOT\cp\tile.bmp" "C:\Program Files\NeoFace\tile.bmp" -Force
             regsvr32 /s $dllPath
             $guid = "{8F3B2C1D-4E5A-4B7C-9D1F-2A3B4C5D6E7F}"
             New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$guid" -Force | Out-Null
