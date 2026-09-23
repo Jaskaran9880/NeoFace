@@ -7,7 +7,12 @@ import time
 from datetime import datetime
 
 BASE_URL = "http://127.0.0.1:8080"
-KEY = "mD5ctQtOcHt5INfaStc8s4Qk7JHEYbavejB4db2YtYA"
+_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_key")
+if not os.path.exists(_KEY_FILE):
+    print("ERROR: .dashboard_key not found - start the dashboard once so it can create one")
+    sys.exit(1)
+with open(_KEY_FILE) as _kf:
+    KEY = _kf.read().strip()
 
 results = []
 
