@@ -95,6 +95,11 @@ C:\NeoFace\
     enroll_fast.py      - Enroll from photos + video
     test_unlock.py      - Test face scan
     set_password_machine.py - Store Windows password (DPAPI)
+  dashboard.py          - Flask dashboard (status, photos, troubleshoot)
+  templates/index.html  - Dashboard UI (Tailwind dark glass)
+  static/logo.png       - Dashboard header logo
+  install/install.ps1   - One-click installer
+  cp/icon.bmp, cp/tile.bmp - Lock screen logo assets (deployed to Program Files)
   photos/               - Your face photos (for enrollment)
   models/
     yunet.onnx          - Face detection (232KB)
@@ -134,6 +139,7 @@ C:\NeoFace\
 | Camera opens slowly | Normal for DSHOW backend (~2-3s first open), subsequent opens are faster |
 | Daemon not starting | Check `C:\ProgramData\NeoFace\daemon.log` for errors |
 | DLL not showing on lock screen | Re-register: `regsvr32 "C:\Program Files\NeoFace\FaceUnlockCP.dll"` |
+| No logo on the NeoFace tile | Re-run `.\cp\deploy_all.ps1` (or `register_cp.ps1`) so `icon.bmp`/`tile.bmp` land in `C:\Program Files\NeoFace` |
 
 ## License
 
