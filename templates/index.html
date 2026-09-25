@@ -415,7 +415,7 @@
     <div class="wrapper">
         <header class="mb-8">
             <div class="flex items-center gap-4">
-                <div class="logo-mark"><img src="/static/logo.png" alt="NeoFace" style="width:100%;height:100%;object-fit:cover;border-radius:inherit"></div>
+                <div class="logo-mark"><img src="{{ url_for('static', filename='logo.png') }}" alt="NeoFace" style="width:100%;height:100%;object-fit:cover;border-radius:inherit" onerror="var m=this.closest('.logo-mark');this.remove();if(m){m.textContent='N';}"></div>
                 <div>
                     <h1 class="text-xl font-semibold tracking-tight" style="color:#f1f5f9">NeoFace</h1>
                     <p style="font-size:12px;color:#64748b;letter-spacing:0.3px">Face unlock control center</p>
@@ -449,7 +449,7 @@
         const renderers = { setup: renderSetup, photos: renderPhotos, settings: renderSettings, test: renderTest, status: renderStatus, troubleshoot: renderTroubleshoot, logs: renderLogs };
         if (renderers[tab]) renderers[tab]().catch(e => {
             console.error('Render error:', e);
-            c.innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Something went wrong loading this section.</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + e.message + '</p><button onclick="switchTab(\'' + tab + '\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
+            c.innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Something went wrong loading this section.</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + escapeHtml(e.message) + '</p><button onclick="switchTab(\'' + tab + '\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
         });
     }
 
@@ -457,7 +457,15 @@
 
     async function api(url, opts = {}) {
         const sep = url.includes('?') ? '&' : '?';
-        try { const r = await fetch(url + sep + 'key=' + API_KEY, opts); return await r.json(); } catch(e) { return {error: e.message}; }
+        try {
+            const r = await fetch(url + sep + 'key=' + encodeURIComponent(API_KEY), opts);
+            let body = null;
+            try { body = await r.json(); } catch (_) { body = null; }
+            if (!body || (r.status >= 400 && !body.error)) {
+                return { error: (body && body.error) || ('Request failed (HTTP ' + r.status + ')') };
+            }
+            return body;
+        } catch (e) { return { error: e.message }; }
     }
 
     function dot(ok) { return `<span class="status-dot ${ok ? 'green' : 'red'}"></span>`; }
@@ -508,8 +516,8 @@
             html += `<div class="item-row">
                 <div style="display:flex;align-items:center;gap:12px">
                     ${checkmark(i.ok)}
-                    <span class="label-text">${i.label}</span>
-                    <span class="detail-text">${i.desc}</span>
+                    <span class="label-text">${escapeHtml(i.label)}</span>
+                    <span class="detail-text">${escapeHtml(i.desc)}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px">
                     ${i.ok ? '<span class="badge badge-green">Ready</span>' : ''}
@@ -547,7 +555,7 @@
             } catch (e) {
                 alert('Download failed: ' + e.message);
             }
-            if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Download All Models'; }
         } else if (action === 'enroll') {
             alert('Enrolling faces from photos...');
             const r = await api('/api/enroll', { method: 'POST' });
@@ -562,6 +570,10 @@
     // ======================== PHOTOS ========================
     async function renderPhotos() {
         const data = await api('/api/photos');
+        if (data.error || !Array.isArray(data.photos)) {
+            document.getElementById('content').innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Failed to load photos</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + escapeHtml(data.error || 'Unexpected response') + '</p><button onclick="switchTab(\'photos\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
+            return;
+        }
         let html = `<div class="section-card liquid-glass">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
                 <h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Face Photos <span class="detail-text" style="font-weight:400">(${data.photos.length})</span></h2>
@@ -579,17 +591,26 @@
             <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px" id="photo-grid">`;
 
         data.photos.forEach(p => {
+            // Thumb endpoint requires the API key - missing key made every
+            // <img> request a failed auth attempt that tripped the rate limiter.
+            const thumbSrc = '/api/photos/' + encodeURIComponent(p.name) + '/thumb?key=' + encodeURIComponent(API_KEY);
+            const ext = (p.name.split('.').pop() || '').toUpperCase();
             html += `<div class="photo-card">
-                <img src="/api/photos/${encodeURIComponent(p.name)}/thumb" alt="${p.name}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-                <div style="display:none;aspect-ratio:1;align-items:center;justify-content:center;color:#475569;font-size:11px">${p.name.split('.').pop().toUpperCase()}</div>
+                <img src="${thumbSrc}" alt="${escapeHtml(p.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                <div style="display:none;aspect-ratio:1;align-items:center;justify-content:center;color:#475569;font-size:11px">${escapeHtml(ext)}</div>
                 <div class="photo-overlay">
-                    <button onclick="deletePhoto('${p.name.replace(/'/g, "\\'")}')" class="glass-btn btn-danger btn-sm" style="font-size:11px">Delete</button>
+                    <button data-delete-photo="${escapeHtml(p.name)}" class="glass-btn btn-danger btn-sm" style="font-size:11px">Delete</button>
                 </div>
             </div>`;
         });
 
         html += '</div></div>';
         document.getElementById('content').innerHTML = html;
+
+        // data-* attribute round-trips HTML entities safely (unlike inline onclick).
+        document.querySelectorAll('[data-delete-photo]').forEach(btn => {
+            btn.addEventListener('click', () => deletePhoto(btn.dataset.deletePhoto));
+        });
 
         const zone = document.getElementById('upload-zone');
         zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('dragover'); };
@@ -598,22 +619,26 @@
     }
 
     async function uploadPhotos(files) {
+        if (!files || !files.length) return;
         const fd = new FormData();
         for (const f of files) fd.append('files', f);
         const r = await api('/api/photos/upload', { method: 'POST', body: fd });
-        alert(`Uploaded ${r.saved} photos`);
+        if (r.error) alert('Upload failed: ' + r.error);
+        else alert(`Uploaded ${r.saved || 0} photos`);
         renderPhotos();
     }
 
     async function deletePhoto(name) {
         if (!confirm(`Delete ${name}?`)) return;
-        await api(`/api/photos/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const r = await api(`/api/photos/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (r.error) alert('Delete failed: ' + r.error);
         renderPhotos();
     }
 
     async function clearPhotos() {
         if (!confirm('Delete all photos?')) return;
-        await api('/api/photos/clear', { method: 'POST' });
+        const r = await api('/api/photos/clear', { method: 'POST' });
+        if (r.error) alert('Clear failed: ' + r.error);
         renderPhotos();
     }
 
@@ -626,6 +651,10 @@
     // ======================== SETTINGS ========================
     async function renderSettings() {
         const s = await api('/api/settings');
+        if (s.error) {
+            document.getElementById('content').innerHTML = '<div class="section-card liquid-glass text-center py-12" style="color:#f87171"><p>Failed to load settings</p><p style="font-size:12px;margin-top:8px;opacity:0.6">' + escapeHtml(s.error) + '</p><button onclick="switchTab(\'settings\')" class="glass-btn btn-ghost btn-sm" style="margin-top:12px">Retry</button></div>';
+            return;
+        }
         let html = `<div class="section-card liquid-glass">
             <h2 style="font-size:16px;font-weight:600;color:#f1f5f9;margin-bottom:24px">Settings</h2>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
@@ -668,8 +697,9 @@
             image_size: parseInt(document.getElementById('imgsize').value),
             camera_index: parseInt(document.getElementById('camidx').value),
         };
-        await api('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
-        alert('Settings saved! Restart daemon to apply.');
+        const r = await api('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+        if (r && r.error) alert('Error saving settings: ' + r.error);
+        else alert('Settings saved! Restart daemon to apply.');
     }
 
     // ======================== TEST ========================
@@ -692,7 +722,7 @@
         document.getElementById('test-result').innerHTML = '<div class="pulse" style="color:#94a3b8;padding:48px 0">Scanning... look at camera</div>';
         const r = await api('/api/test-scan', { method: 'POST' });
         if (r.error) {
-            document.getElementById('test-result').innerHTML = `<div style="color:#f87171;padding:48px 0">${r.error}</div>`;
+            document.getElementById('test-result').innerHTML = `<div style="color:#f87171;padding:48px 0">${escapeHtml(r.error)}</div>`;
             return;
         }
         const ok = r.result === 'OK';
@@ -740,8 +770,8 @@
             html += `<div class="item-row">
                 <div style="display:flex;align-items:center;gap:12px">
                     ${dot(i.ok)}
-                    <span class="label-text">${i.label}</span>
-                    <span class="detail-text">${i.detail}</span>
+                    <span class="label-text">${escapeHtml(i.label)}</span>
+                    <span class="detail-text">${escapeHtml(i.detail)}</span>
                 </div>
                 <div>
                     ${i.action ? `<button onclick="daemonAction('${i.action}')" class="glass-btn btn-sm ${i.action === 'stop' ? 'btn-danger' : 'btn-success'}">${i.actionLabel}</button>` : ''}
@@ -754,7 +784,8 @@
     }
 
     async function daemonAction(action) {
-        await api(`/api/daemon/${action}`, { method: 'POST' });
+        const r = await api(`/api/daemon/${action}`, { method: 'POST' });
+        if (r && r.error) alert('Error: ' + r.error);
         setTimeout(renderStatus, 1000);
     }
 
@@ -805,7 +836,7 @@
         for (const c of components) {
             const r = await api(`/api/troubleshoot/${c}`, { method: 'POST' });
             const result = r[c] || r;
-            const ok = result.ok;
+            const ok = !!result.ok;
             const detail = result.error || result.message || (ok ? 'OK' : 'FAIL');
             const extras = [
                 result.resolution,
@@ -819,7 +850,7 @@
                     <span class="label-text">${labels[c]}</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:10px">
-                    <span class="badge ${ok ? 'badge-green' : 'badge-red'}">${detail}</span>
+                    <span class="badge ${ok ? 'badge-green' : 'badge-red'}">${escapeHtml(String(detail))}</span>
                     ${extras ? `<span class="detail-text">${extras}</span>` : ''}
                 </div>`;
         }
@@ -831,6 +862,7 @@
     // ======================== LOGS ========================
     async function renderLogs() {
         const d = await api('/api/logs?type=daemon&lines=50');
+        const logText = d.content || d.error || 'No logs yet';
         let html = `<div class="section-card liquid-glass">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
                 <h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Logs</h2>
@@ -843,7 +875,7 @@
                     <button onclick="clearLogs()" class="glass-btn btn-danger btn-sm">Clear</button>
                 </div>
             </div>
-            <pre id="log-content" class="log-box">${escapeHtml(d.content || 'No logs yet')}</pre>
+            <pre id="log-content" class="log-box">${escapeHtml(logText)}</pre>
         </div>`;
         document.getElementById('content').innerHTML = html;
     }
@@ -851,16 +883,17 @@
     async function refreshLogs() {
         const type = document.getElementById('log-type').value;
         const r = await api(`/api/logs?type=${type}&lines=100`);
-        document.getElementById('log-content').textContent = r.content || 'No logs';
+        document.getElementById('log-content').textContent = r.content || r.error || 'No logs';
     }
 
     async function clearLogs() {
         const type = document.getElementById('log-type').value;
-        await api('/api/logs/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({type}) });
+        const r = await api('/api/logs/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({type}) });
+        if (r && r.error) alert('Clear failed: ' + r.error);
         refreshLogs();
     }
 
-    function escapeHtml(t) { return (t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+    function escapeHtml(t) { return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
     renderSetup();
     </script>
