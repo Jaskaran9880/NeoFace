@@ -1,14 +1,17 @@
+import math
 import os
 import sys
 import subprocess
 import time
 import secrets
+from functools import wraps
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
 os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 
 from flask import Flask, render_template, request, jsonify
+from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__, template_folder=os.path.join(ROOT, "templates"))
@@ -41,49 +44,94 @@ API_KEY = os.environ.get("NEOFACE_API_KEY") or _load_or_create_api_key()
 
 def require_api_key(f):
     """Decorator: require ?key=... or X-API-Key header on every /api/* route.
-    Includes rate limiting: after 5 failed attempts from an IP, return 429 for 60s.
+
+    Rate limiting applies ONLY to failed auth attempts (brute-force
+    protection): after _RATE_LIMIT_MAX bad attempts from an IP within
+    _RATE_LIMIT_WINDOW seconds, further bad attempts get 429 with a
+    Retry-After header. A request carrying a valid key always succeeds
+    and clears that IP's failure history, so legitimate dashboard use
+    (status polling, thumbnails, Setup checks) can never be blocked.
     """
-    from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
         ip = request.remote_addr or "unknown"
-        if not _check_rate_limit(ip):
-            return jsonify({"error": "Too many failed attempts. Try again in 60 seconds."}), 429
         provided = request.args.get("key") or request.headers.get("X-API-Key")
-        if not provided or not secrets.compare_digest(provided, API_KEY):
-            _record_auth_failure(ip)
-            return jsonify({"error": "Unauthorized - provide ?key= parameter or X-API-Key header"}), 401
-        return f(*args, **kwargs)
+        if provided and _key_matches(provided):
+            _clear_rate_limit(ip)
+            return f(*args, **kwargs)
+        # Missing or invalid key: count the failure, then enforce the limit.
+        _record_auth_failure(ip)
+        allowed, retry_after = _rate_limit_status(ip)
+        if not allowed:
+            resp = jsonify({"error": "Too many failed attempts. Try again in %d seconds." % retry_after})
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(retry_after)
+            return resp
+        return jsonify({"error": "Unauthorized - provide ?key= parameter or X-API-Key header"}), 401
     return decorated
 
 
 # --- Rate Limiting ---
-# Simple in-memory rate limiter for failed auth attempts per IP.
-# After _RATE_LIMIT_MAX failures, the IP is blocked for _RATE_LIMIT_WINDOW seconds.
+# In-memory limiter for FAILED auth attempts per IP. Valid-key requests
+# are exempt (see require_api_key) so normal UI traffic is never bricked.
 _RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW = 60  # seconds
 _rate_limit_failures = {}  # ip -> [list of failure timestamps]
 
 
-def _check_rate_limit(ip):
-    """Return True if request is allowed, False if rate-limited."""
-    now = time.time()
-    if ip not in _rate_limit_failures:
-        return True
-    # Prune old entries outside the window
-    _rate_limit_failures[ip] = [t for t in _rate_limit_failures[ip] if now - t < _RATE_LIMIT_WINDOW]
-    if not _rate_limit_failures[ip]:
-        del _rate_limit_failures[ip]
-        return True
-    return len(_rate_limit_failures[ip]) < _RATE_LIMIT_MAX
+def _prune_failures(ip, now):
+    """Drop expired failure timestamps for ip; remove the entry if empty."""
+    failures = [t for t in _rate_limit_failures.get(ip, []) if now - t < _RATE_LIMIT_WINDOW]
+    if failures:
+        _rate_limit_failures[ip] = failures
+    else:
+        _rate_limit_failures.pop(ip, None)
+    return failures
 
 
 def _record_auth_failure(ip):
     """Record a failed auth attempt for the given IP."""
+    _rate_limit_failures.setdefault(ip, []).append(time.time())
+
+
+def _rate_limit_status(ip):
+    """Return (allowed, retry_after_seconds) with the latest failure counted."""
     now = time.time()
-    if ip not in _rate_limit_failures:
-        _rate_limit_failures[ip] = []
-    _rate_limit_failures[ip].append(now)
+    failures = _prune_failures(ip, now)
+    if len(failures) < _RATE_LIMIT_MAX:
+        return True, 0
+    # Blocked until the oldest failure ages out of the window.
+    retry_after = int(math.ceil(min(failures) + _RATE_LIMIT_WINDOW - now))
+    return False, max(1, retry_after)
+
+
+def _clear_rate_limit(ip):
+    """A successful authentication clears the IP's failure history."""
+    _rate_limit_failures.pop(ip, None)
+
+
+def _key_matches(provided):
+    """Constant-time API key comparison; never raises on odd input."""
+    try:
+        return secrets.compare_digest(provided.encode("utf-8"), API_KEY.encode("utf-8"))
+    except Exception:
+        return False
+
+
+# --- JSON error responses for /api/* (never surface HTML error pages) ---
+@app.errorhandler(HTTPException)
+def _handle_http_error(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": e.description or e.name}), e.code
+    return e
+
+
+@app.errorhandler(Exception)
+def _handle_unexpected_error(e):
+    if request.path.startswith("/api/"):
+        app.logger.exception("Unhandled error on %s", request.path)
+        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+    return "Internal Server Error", 500
 
 PHOTOS_DIR = os.path.join(ROOT, "photos")
 PHOTO_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
@@ -98,6 +146,67 @@ DLL_PATH = r"C:\Program Files\NeoFace\FaceUnlockCP.dll"
 
 os.makedirs(PHOTOS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
+
+
+def _read_config_values():
+    """Parse config.toml into {section: {key: raw_value}}.
+
+    - Raw value text is kept verbatim (including quotes) for lossless
+      round-trip writes when saving settings.
+    - Section-aware so duplicate keys (engine vs camera `backend`,
+      camera vs pipe `buffer_size`) never collide.
+    - Skips malformed lines instead of aborting the whole parse.
+    """
+    sections = {}
+    current = ""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    current = line[1:-1].strip()
+                    sections.setdefault(current, {})
+                    continue
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                sections.setdefault(current, {})[key.strip()] = val.strip()
+    except OSError:
+        pass
+    return sections
+
+
+def _flat_get(sections, key, default=None):
+    """Flat last-wins lookup - mirrors how daemon_pipe._read_config scans keys."""
+    val = default
+    for kv in sections.values():
+        if key in kv:
+            val = kv[key]
+    return val
+
+
+def _raw_number(raw, cast, default):
+    """Cast a raw config value to a number, tolerating quotes/comments."""
+    if raw is None:
+        return default
+    try:
+        return cast(str(raw).split("#", 1)[0].strip().strip('"'))
+    except (ValueError, TypeError):
+        return default
+
+
+def _serialize_config(sections):
+    """Serialize {section: {key: raw_value}} back to TOML text."""
+    lines = []
+    for name, kv in sections.items():
+        if name:
+            lines.append("[%s]" % name)
+        for k, v in kv.items():
+            lines.append("%s = %s" % (k, v))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 _camera_index_cache = None
@@ -208,8 +317,11 @@ def get_status():
     else:
         status["camera"] = {"available": True, "name": "in use by daemon"}
 
-    photo_exts = (".jpg", ".jpeg", ".png", ".bmp", ".heic", ".heif", ".webp")
-    photos = [f for f in os.listdir(PHOTOS_DIR) if f.lower().endswith(photo_exts)]
+    photo_exts = PHOTO_EXTS
+    try:
+        photos = [f for f in os.listdir(PHOTOS_DIR) if f.lower().endswith(photo_exts)]
+    except OSError:
+        photos = []
     status["photos"] = {"count": len(photos), "files": photos}
 
     task_exists = False
@@ -235,7 +347,11 @@ def index():
 @app.route("/api/status")
 @require_api_key
 def api_status():
-    return jsonify(get_status())
+    try:
+        return jsonify(get_status())
+    except Exception as e:
+        # Never let a status failure become an HTML 500 page.
+        return jsonify({"error": "Failed to load status: %s" % e}), 500
 
 
 @app.route("/api/health")
@@ -337,11 +453,18 @@ def api_photo_thumb(name):
 @app.route("/api/photos/clear", methods=["POST"])
 @require_api_key
 def api_photos_clear():
+    try:
+        files = os.listdir(PHOTOS_DIR)
+    except OSError as e:
+        return jsonify({"error": "Cannot access photos directory: %s" % e}), 500
     deleted = 0
-    for f in os.listdir(PHOTOS_DIR):
+    for f in files:
         if f.lower().endswith(PHOTO_EXTS):
-            os.remove(os.path.join(PHOTOS_DIR, f))
-            deleted += 1
+            try:
+                os.remove(os.path.join(PHOTOS_DIR, f))
+                deleted += 1
+            except OSError:
+                continue
     return jsonify({"deleted": deleted})
 
 
@@ -373,55 +496,49 @@ def api_enroll():
 @app.route("/api/settings", methods=["GET"])
 @require_api_key
 def api_settings_get():
+    # Flat last-wins lookup matches exactly what the daemon reads, so the
+    # UI never shows a stale/default threshold the daemon isn't using.
+    sections = _read_config_values()
+
+    def _num(key, cast, default):
+        return _raw_number(_flat_get(sections, key), cast, default)
+
     settings = {
-        "threshold": 0.35,
-        "frames": 3,
-        "hit_required": 2,
-        "image_size": 320,
-        "camera_index": 0,
-        "camera_width": 640,
-        "camera_height": 480,
+        "threshold": _num("cosine_threshold", float, 0.35),
+        "frames": _num("frames", int, 3),
+        "hit_required": _num("hit_required", int, 2),
+        "image_size": _num("image_size", int, 320),
+        "camera_index": _num("index", int, 0),
+        "camera_width": _num("width", int, 640),
+        "camera_height": _num("height", int, 480),
     }
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if "=" in line and not line.startswith("[") and not line.startswith("#"):
-                        key, val = line.split("=", 1)
-                        key = key.strip()
-                        val = val.strip().strip('"')
-                        if key == "cosine_threshold":
-                            settings["threshold"] = float(val)
-                        elif key == "frames":
-                            settings["frames"] = int(val)
-                        elif key == "hit_required":
-                            settings["hit_required"] = int(val)
-                        elif key == "image_size":
-                            settings["image_size"] = int(val)
-                        elif key == "index":
-                            settings["camera_index"] = int(val)
-        except Exception:
-            pass
     return jsonify(settings)
 
 
 @app.route("/api/settings", methods=["POST"])
 @require_api_key
 def api_settings_save():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "No data"}), 400
 
-    # Validate all inputs are numeric to prevent TOML injection
+    # Merge into the existing config instead of overwriting the whole file:
+    # preserves unknown sections/keys (hotkey, paths, antispoof tuning,
+    # pipe name, detector paths, ...) and daemon-critical keys such as
+    # antispoof_threshold, which the old fixed template silently dropped.
+    sections = _read_config_values()
+
+    # Validate all inputs are numeric to prevent TOML injection.
+    # Defaults fall back to the CURRENT config value (not hardcoded) so a
+    # save from the UI never resets keys the form doesn't show.
     try:
-        image_size = int(data.get('image_size', 320))
-        frames = int(data.get('frames', 3))
-        hit_required = int(data.get('hit_required', 2))
-        threshold = float(data.get('threshold', 0.35))
-        camera_index = int(data.get('camera_index', 0))
-        camera_width = int(data.get('camera_width', 640))
-        camera_height = int(data.get('camera_height', 480))
+        image_size = int(data.get('image_size', _raw_number(_flat_get(sections, "image_size"), int, 320)))
+        frames = int(data.get('frames', _raw_number(_flat_get(sections, "frames"), int, 3)))
+        hit_required = int(data.get('hit_required', _raw_number(_flat_get(sections, "hit_required"), int, 2)))
+        threshold = float(data.get('threshold', _raw_number(_flat_get(sections, "cosine_threshold"), float, 0.35)))
+        camera_index = int(data.get('camera_index', _raw_number(_flat_get(sections, "index"), int, 0)))
+        camera_width = int(data.get('camera_width', _raw_number(_flat_get(sections, "width"), int, 640)))
+        camera_height = int(data.get('camera_height', _raw_number(_flat_get(sections, "height"), int, 480)))
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid settings values - all must be numeric"}), 400
 
@@ -437,38 +554,26 @@ def api_settings_save():
     if not (0 <= camera_index <= 10):
         return jsonify({"error": "camera_index must be between 0 and 10"}), 400
 
-    content = f"""[engine]
-backend = "fast"
+    def _set(section, key, value):
+        """Set a managed key, removing stale copies elsewhere so the daemon's
+        flat (last-wins) key match can't keep reading an old value."""
+        for kv in sections.values():
+            kv.pop(key, None)
+        sections.setdefault(section, {})[key] = str(value)
 
-[fast]
-detector = "models/yunet.onnx"
-recognizer = "models/sface.onnx"
-image_size = {image_size}
-frames = {frames}
-hit_required = {hit_required}
+    _set("fast", "image_size", image_size)
+    _set("fast", "frames", frames)
+    _set("fast", "hit_required", hit_required)
+    _set("match", "cosine_threshold", threshold)
+    _set("camera", "index", camera_index)
+    _set("camera", "width", camera_width)
+    _set("camera", "height", camera_height)
 
-[match]
-cosine_threshold = {threshold}
+    # Daemon-critical keys must never disappear (see config.example.toml).
+    if not any("antispoof_threshold" in kv for kv in sections.values()):
+        sections.setdefault("match", {})["antispoof_threshold"] = "0.3"
 
-[camera]
-index = {camera_index}
-width = {camera_width}
-height = {camera_height}
-fps = 30
-codec = "MJPG"
-backend = "DSHOW"
-buffer_size = 1
-
-[pipe]
-name = "\\\\.\\pipe\\NeoFace"
-max_instances = 1
-buffer_size = 65536
-
-[presence]
-enabled = false
-tick_seconds = 45
-idle_timeout = 60
-"""
+    content = _serialize_config(sections)
     # Atomic write: write to temp file first, then use os.replace() for consistency
     import tempfile
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(CONFIG_FILE), suffix=".tmp")
@@ -483,6 +588,9 @@ idle_timeout = 60
         except OSError:
             pass
         raise
+    # Camera index may have changed - drop the cached detection result.
+    global _camera_index_cache
+    _camera_index_cache = None
     return jsonify({"saved": True})
 
 
@@ -499,9 +607,12 @@ def api_logs():
     log_file = DAEMON_LOG if log_type == "daemon" else CP_LOG
     content = ""
     if os.path.exists(log_file):
-        with open(log_file, "r", errors="ignore") as f:
-            all_lines = f.readlines()
-            content = "".join(all_lines[-lines:])
+        try:
+            with open(log_file, "r", errors="ignore") as f:
+                all_lines = f.readlines()
+                content = "".join(all_lines[-lines:])
+        except OSError:
+            content = ""
     return jsonify({"content": content, "type": log_type})
 
 
@@ -575,15 +686,10 @@ def api_test_scan():
         cam.release()
 
         best = max(scores) if scores else 0
-        threshold = 0.35
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r") as f:
-                    for line in f:
-                        if "cosine_threshold" in line:
-                            threshold = float(line.split("=")[1].strip())
-            except Exception:
-                pass
+        # Read threshold exactly like the daemon does (flat, last-wins).
+        threshold = _raw_number(
+            _flat_get(_read_config_values(), "cosine_threshold"), float, 0.35
+        )
         ok = best >= threshold and len(scores) >= 2
 
         return jsonify({
@@ -620,7 +726,7 @@ def api_setup_models():
 @app.route("/api/setup/password", methods=["POST"])
 @require_api_key
 def api_setup_password():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     password = data.get("password", "")
     if not password:
         return jsonify({"error": "No password provided"}), 400
