@@ -484,6 +484,98 @@ def _finalize(payload):
     return payload
 
 
+# --- update cache (.update_cache.json, atomic writes, 300s/60s/7d) -------
+def _read_update_cache():
+    """Read the cache -> {"success": ..., "failure": ...} or {} on any problem."""
+    try:
+        with open(UPDATE_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _write_update_cache(data):
+    """Atomic cache write: temp file in ROOT, then os.replace()."""
+    tmp = UPDATE_CACHE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, UPDATE_CACHE_FILE)
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _save_update_cache(success=None, failure=None):
+    """Merge-write the cache; a success clears any recorded failure."""
+    data = _read_update_cache()
+    now = int(time.time())
+    if success is not None:
+        data["success"] = {"saved_at": now, "payload": success}
+        data["failure"] = None
+    if failure is not None:
+        data["failure"] = {"saved_at": now, "payload": failure}
+    _write_update_cache(data)
+
+
+def _cache_view(payload, now=None):
+    """Serve a cached payload with cached/cache_age_s filled in."""
+    now = now if now is not None else time.time()
+    out = dict(payload)
+    out["cached"] = True
+    out["cache_age_s"] = int(max(0, now - (payload.get("checked_at") or now)))
+    return out
+
+
+def _fresh_cached_update(now=None):
+    """Response for an auto (no ?force=1) call, or None when a re-check is due.
+
+    Failures are honoured for 60s (network backoff); a good result for 300s.
+    """
+    now = now if now is not None else time.time()
+    data = _read_update_cache()
+    failure = data.get("failure")
+    if isinstance(failure, dict) and isinstance(failure.get("payload"), dict):
+        if now - (failure.get("saved_at") or 0) < UPDATE_FAILURE_TTL:
+            return _cache_view(failure["payload"], now)
+        return None  # backoff expired -> re-check so we recover promptly
+    success = data.get("success")
+    if isinstance(success, dict) and isinstance(success.get("payload"), dict):
+        payload = success["payload"]
+        if payload.get("ok") and now - (payload.get("checked_at") or 0) < UPDATE_CACHE_TTL:
+            return _cache_view(payload, now)
+    return None
+
+
+def _stale_update_payload(now=None):
+    """Last good result, if it is at most 7 days old (else None)."""
+    now = now if now is not None else time.time()
+    success = _read_update_cache().get("success") or {}
+    payload = success.get("payload")
+    if isinstance(payload, dict) and payload.get("ok"):
+        age = now - (payload.get("checked_at") or 0)
+        if 0 <= age <= UPDATE_STALE_MAX_AGE:
+            return payload
+    return None
+
+
+def _stale_response(stale, err):
+    """Last good result + stale flag + the error that blocked the refresh."""
+    payload = dict(stale)
+    payload["stale"] = True
+    payload["error"] = err.message
+    payload["cached"] = True
+    payload["cache_age_s"] = int(max(0, time.time() - (payload.get("checked_at") or time.time())))
+    _save_update_cache(failure=payload)   # 60s backoff before we hit the network again
+    return _finalize(payload)
+
+
 @app.route("/")
 def index():
     return render_template("index.html", api_key=API_KEY)
