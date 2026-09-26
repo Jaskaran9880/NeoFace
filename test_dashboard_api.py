@@ -528,6 +528,51 @@ else:
                                    % (local_sha[:8], behind, len(commits),
                                       update_body.get("commits_truncated")))
 
+            # ── 30. ?force=1 -> 200 ─────────────────────────────────
+            if not _update_state["endpoint_missing"]:
+                print("\n[30] GET %s?force=1 (with key -> 200)" % UPDATE_ENDPOINT)
+                update_get({"key": update_key, "force": "1"},
+                           "force=1", expected_status=200)
+
+            # ── 31. rapid x3, each <= 20s ───────────────────────────
+            if _update_state["endpoint_missing"]:
+                print("\n[31] rapid x3 skipped: endpoint missing - restart dashboard")
+            else:
+                print("\n[31] GET %s x3 rapid (each <= 20s)" % UPDATE_ENDPOINT)
+                timings = []
+                rapid_status = 200
+                rapid_fail = None
+                for i in range(3):
+                    t0 = time.time()
+                    try:
+                        rr = requests.get(BASE_URL + UPDATE_ENDPOINT,
+                                          params={"key": update_key}, timeout=20)
+                    except Exception as e:
+                        rapid_status, rapid_fail = "ERR", "call %d: %s" % (i + 1, str(e)[:120])
+                        break
+                    elapsed = time.time() - t0
+                    timings.append("%.2fs" % elapsed)
+                    if rr.status_code == 404:
+                        _update_state["endpoint_missing"] = True
+                        rapid_status = 404
+                        rapid_fail = "call %d: endpoint missing - restart dashboard" % (i + 1)
+                        break
+                    if rr.status_code != 200:
+                        rapid_status = rr.status_code
+                        rapid_fail = "call %d: HTTP %s" % (i + 1, rr.status_code)
+                        break
+                    if elapsed > 20:
+                        rapid_status = rr.status_code
+                        rapid_fail = "call %d took %.1fs (>20s)" % (i + 1, elapsed)
+                        break
+
+                if rapid_fail:
+                    log_result(UPDATE_ENDPOINT, "GET", rapid_status, "FAIL",
+                               "rapid x3: %s" % rapid_fail)
+                else:
+                    log_result(UPDATE_ENDPOINT, "GET", 200, "PASS",
+                               "3 sequential calls OK in %s" % ", ".join(timings))
+
 # ====================================================================
 #  SUMMARY TABLE
 # ════════════════════════════════════════════════════════════════════
