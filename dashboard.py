@@ -864,7 +864,9 @@ def api_status():
 @app.route("/api/health")
 @require_api_key
 def api_health():
-    return jsonify({"status": "ok", "version": "0.4.0"})
+    # git describe (60s memo) instead of a hardcoded, always-stale version.
+    info = local_version_info()
+    return jsonify({"status": "ok", "version": info["version"], "sha": info["sha"]})
 
 
 @app.route("/api/photos")
