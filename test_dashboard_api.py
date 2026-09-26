@@ -1,6 +1,43 @@
+#!/usr/bin/env python3
+"""NeoFace dashboard API test suite.
+
+================================================================================
+  DESTRUCTIVE TESTS ARE OPT-IN - READ THIS FIRST
+================================================================================
+By default this suite runs READ-ONLY checks only (health, status, photos GET,
+settings GET, logs GET, troubleshoot, update-check 27-32, static XSS guard).
+
+Tests [5] [6] [7] [10] [11] [12] [23] [24] [25] [26] MUTATE the live
+install and are SKIPPED unless the env flag is set:
+
+    PowerShell:  $env:NEOFACE_TEST_DESTRUCTIVE = "1"; python test_dashboard_api.py
+    cmd:         set NEOFACE_TEST_DESTRUCTIVE=1 && python test_dashboard_api.py
+    bash:        NEOFACE_TEST_DESTRUCTIVE=1 python test_dashboard_api.py
+    Off again:   Remove-Item Env:NEOFACE_TEST_DESTRUCTIVE   (or set to 0)
+
+What a destructive run touches (do NOT enable casually):
+    [5]  POST /api/settings   - rewrites config.toml (threshold etc).
+                                Backed up and RESTORED automatically.
+    [6]  POST /api/test-scan  - grabs the camera
+    [7]  POST /api/enroll     - rebuilds the face gallery templates
+    [9]  POST /api/setup/password - SAFE: asserts the Windows Hello consent
+                                gate rejects a save without a token (403)
+    [10] POST /api/setup/daemon   - re-registers the scheduled task
+    [11] POST /api/daemon/start   - starts the daemon
+    [12] POST /api/daemon/stop    - STOPS the daemon
+    [23] POST /api/logs/clear     - truncates daemon/cp logs
+    [24] POST /api/photos/upload  - uploads a test photo
+    [25] DELETE /api/photos/...   - deletes a photo
+    [26] POST /api/photos/clear   - DELETES THE ENTIRE PHOTO GALLERY
+
+Skipped tests are reported as SKIP in the summary table.
+================================================================================
+"""
+
 import requests
 import json
 import os
+import re
 import sys
 import base64
 import time
@@ -16,6 +53,29 @@ with open(_KEY_FILE) as _kf:
 
 results = []
 
+# ── Destructive test gate ─────────────────────────────────────────────
+# True only when NEOFACE_TEST_DESTRUCTIVE=1 (exact match). Default: off.
+DESTRUCTIVE_ENABLED = os.environ.get("NEOFACE_TEST_DESTRUCTIVE") == "1"
+
+
+def destructive(n, endpoint, method):
+    """Gate for tests that mutate the live install (config/vault/photos/daemon).
+
+    Returns True when NEOFACE_TEST_DESTRUCTIVE=1 is set; otherwise prints a
+    SKIP notice, records a SKIP row for the summary table, and returns False
+    so the caller's block is skipped.
+    """
+    if DESTRUCTIVE_ENABLED:
+        return True
+    try:
+        print("  [SKIP] destructive test %d \u2014 set NEOFACE_TEST_DESTRUCTIVE=1 to run" % n)
+    except UnicodeEncodeError:
+        # Legacy console codepage without the em dash - keep the notice ASCII.
+        print("  [SKIP] destructive test %d - set NEOFACE_TEST_DESTRUCTIVE=1 to run" % n)
+    log_result(endpoint, method, "-", "SKIP",
+               "destructive test %d skipped - set NEOFACE_TEST_DESTRUCTIVE=1" % n)
+    return False
+
 
 def log_result(endpoint, method, status_code, pass_fail, notes):
     results.append({
@@ -25,7 +85,12 @@ def log_result(endpoint, method, status_code, pass_fail, notes):
         "pass_fail": pass_fail,
         "notes": notes
     })
-    symbol = "OK " if pass_fail == "PASS" else "FAIL"
+    if pass_fail == "PASS":
+        symbol = "OK  "
+    elif pass_fail == "SKIP":
+        symbol = "SKIP"
+    else:
+        symbol = "FAIL"
     print("  [%s] %s %s -> %s [%s] %s" % (symbol, method, endpoint, status_code, pass_fail, notes))
 
 
@@ -103,6 +168,11 @@ print("  NeoFace Dashboard API Test Suite")
 print("  Time: %s" % datetime.now().isoformat())
 print("  Target: %s" % BASE_URL)
 print("  Key: %s...%s" % (KEY[:6], KEY[-4:]))
+if DESTRUCTIVE_ENABLED:
+    print("  Mode: DESTRUCTIVE tests ENABLED (NEOFACE_TEST_DESTRUCTIVE=1)")
+else:
+    print("  Mode: read-only - destructive tests SKIPPED "
+          "(set NEOFACE_TEST_DESTRUCTIVE=1 to run them)")
 print("=" * 80)
 
 # ── 1. GET /api/health ─────────────────────────────────────────────
