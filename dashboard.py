@@ -628,6 +628,80 @@ def _impact_for_paths(paths):
     return "core"
 
 
+def _git_remote_check(local):
+    """fetch -> compare -> incoming commits -> changes_summary + impact."""
+    _git_check_origin()   # allow-list BEFORE any network call
+
+    ok, _, err = _git(["fetch", "--quiet", "--no-tags", "origin",
+                       "main:refs/remotes/origin/main"], UPDATE_FETCH_TIMEOUT)
+    if not ok:
+        raise UpdateError("fetch_failed",
+                          "git fetch failed: %s" % (err.strip() or "unknown error"),
+                          cacheable=True)
+
+    ok, out, _ = _git(["rev-parse", "--short=7", "refs/remotes/origin/main"], 10)
+    if not ok:
+        raise UpdateError("fetch_failed", "origin/main is missing after fetch.", cacheable=True)
+    remote_sha = out.strip()
+
+    ok, out, _ = _git(["rev-list", "--left-right", "--count",
+                       "HEAD...refs/remotes/origin/main"], 10)
+    if not ok:
+        raise UpdateError("fetch_failed", "Could not compare HEAD with origin/main.",
+                          cacheable=True)
+    fields = out.strip().split()
+    try:
+        ahead, behind = int(fields[0]), int(fields[1])
+    except (IndexError, ValueError):
+        raise UpdateError("fetch_failed", "Unexpected rev-list output: %r" % out[:80],
+                          cacheable=True)
+
+    commits = []
+    truncated = behind > 20
+    if behind > 0:
+        ok, out, _ = _git(["log", "-n", "21", "--no-decorate",
+                           "--pretty=format:%H%x1f%h%x1f%aI%x1f%s",
+                           "HEAD..refs/remotes/origin/main"], 10)
+        if ok:
+            records = [line for line in out.split("\n") if line.strip()]
+            truncated = truncated or len(records) > 20
+            for line in records[:20]:   # never return more than 20 commits
+                parts = line.split("\x1f")
+                if len(parts) < 4:
+                    continue
+                commits.append({
+                    "sha": parts[0],
+                    "subject": parts[3],
+                    "date": (parts[2] or "")[:10],
+                })
+
+    changes_summary = ""
+    impact = "none"
+    if behind > 0:
+        ok, out, _ = _git(["diff", "--shortstat", "HEAD", "refs/remotes/origin/main"], 15)
+        if ok:
+            changes_summary = out.strip()
+        ok, out, _ = _git(["-c", "core.quotepath=false", "diff", "--name-only",
+                           "HEAD", "refs/remotes/origin/main"], 15)
+        if ok:
+            impact = _impact_for_paths([p.strip() for p in out.split("\n") if p.strip()])
+
+    payload = _update_payload("git")
+    payload.update({
+        "local_sha": local.get("sha"),
+        "local_version": local.get("version"),
+        "dirty": bool(local.get("dirty")),
+        "remote_sha": remote_sha,
+        "behind_count": behind,
+        "ahead_count": ahead,
+        "commits": commits,
+        "commits_truncated": bool(truncated),
+        "changes_summary": changes_summary,
+        "impact": impact,
+    })
+    return _finalize(payload)
+
+
 @app.route("/")
 def index():
     return render_template("index.html", api_key=API_KEY)
