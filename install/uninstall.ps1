@@ -166,17 +166,84 @@ foreach ($id in $targetIds) {
 }
 if ($targetIds.Count -eq 0) { Write-Host "  No NeoFace processes running" -ForegroundColor Gray }
 
-# Unregister DLL
-Write-Host "`n[2/4] Unregistering DLL..."
-$guid = "{8F3B2C1D-4E5A-4B7C-9D1F-2A3B4C5D6E7F}"
-regsvr32 /u /s "C:\Program Files\NeoFace\FaceUnlockCP.dll" -ErrorAction SilentlyContinue
-Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$guid" -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host "  DLL unregistered" -ForegroundColor Green
+# --- [2/6] Remove scheduled tasks ---------------------------------------
+Write-Host "`n[2/6] Removing scheduled tasks..." -ForegroundColor Yellow
+$tasks = @()
+try {
+    $tasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like 'NeoFace*' })
+} catch { }
+foreach ($t in $tasks) {
+    try {
+        Stop-ScheduledTask -TaskName $t.TaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $t.TaskName -Confirm:$false -ErrorAction Stop
+        $script:removed.Add("Scheduled task '$($t.TaskName)'")
+        Write-Host "  Removed task $($t.TaskName)" -ForegroundColor Green
+    } catch {
+        $script:failed.Add("Scheduled task '$($t.TaskName)' - $($_.Exception.Message)")
+    }
+}
+if ($tasks.Count -eq 0) { Write-Host "  No NeoFace scheduled tasks found" -ForegroundColor Gray }
 
-# Remove DLL
-Write-Host "`n[3/4] Removing DLL..."
-Remove-Item "C:\Program Files\NeoFace" -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host "  Removed C:\Program Files\NeoFace" -ForegroundColor Green
+# --- [3/6] Unregister the credential provider DLL -----------------------
+# MUST happen before deleting files (regsvr32 needs the DLL on disk).
+Write-Host "`n[3/6] Unregistering lock screen credential provider..." -ForegroundColor Yellow
+
+if (Test-Path $CP_DLL) {
+    & regsvr32.exe /u /s "$CP_DLL" | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $script:removed.Add("COM registration of FaceUnlockCP.dll (lock screen tile)")
+        Write-Host "  DLL unregistered - NeoFace tile removed from Win+L" -ForegroundColor Green
+    } else {
+        $script:failed.Add("regsvr32 /u failed for $CP_DLL (exit $LASTEXITCODE)")
+        Write-Host "  WARNING: regsvr32 could not unregister the DLL (it may be in use)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  $CP_DLL not present" -ForegroundColor Gray
+}
+
+# Repo copy may also have been registered directly (cp\unregister_cp.ps1 does both)
+if (Test-Path $REPO_DLL) {
+    & regsvr32.exe /u /s "$REPO_DLL" | Out-Null   # best effort, result not reported
+}
+
+# Remove the provider key the installer created manually
+if (Test-Path $CP_KEY) {
+    try {
+        Remove-Item -LiteralPath $CP_KEY -Recurse -Force -ErrorAction Stop
+        $script:removed.Add("Credential provider registry key")
+    } catch {
+        $script:failed.Add("Registry key $CP_KEY - $($_.Exception.Message)")
+    }
+}
+
+# --- [4/6] Remove installed files ---------------------------------------
+Write-Host "`n[4/6] Removing installed files..." -ForegroundColor Yellow
+if (Test-Path $CP_DIR) {
+    try { Remove-Item -LiteralPath $CP_DIR -Recurse -Force -ErrorAction Stop } catch { }
+    if (!(Test-Path $CP_DIR)) {
+        $script:removed.Add($CP_DIR)
+        Write-Host "  Removed $CP_DIR" -ForegroundColor Green
+    } else {
+        # Files are locked (LogonUI holds the DLL while the lock screen is up)
+        $leftover = @(Get-ChildItem -Path $CP_DIR -Recurse -Force -ErrorAction SilentlyContinue)
+        $bad = 0
+        foreach ($f in $leftover) {
+            if (!(Set-PendingDelete -Path $f.FullName)) { $bad++ }
+        }
+        $dirPending = Set-PendingDelete -Path $CP_DIR
+        if ($bad -eq 0 -and $dirPending) {
+            $script:notes.Add("$CP_DIR is in use (lock screen/LogonUI) - deletion scheduled for next reboot")
+            Write-Host "  Locked by the lock screen - will be removed on next reboot" -ForegroundColor Yellow
+        } else {
+            $script:failed.Add("$CP_DIR is locked and could not be scheduled for deletion - reboot and rerun")
+        }
+        if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) {
+            $script:notes.Add("LogonUI.exe is running - sign out or reboot, then rerun if files remain")
+        }
+    }
+} else {
+    Write-Host "  $CP_DIR not present" -ForegroundColor Gray
+}
 
 # Remove data (ask first)
 Write-Host "`n[4/4] Data files..."
