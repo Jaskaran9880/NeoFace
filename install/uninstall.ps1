@@ -245,15 +245,89 @@ if (Test-Path $CP_DIR) {
     Write-Host "  $CP_DIR not present" -ForegroundColor Gray
 }
 
-# Remove data (ask first)
-Write-Host "`n[4/4] Data files..."
-$confirm = Read-Host "Remove face gallery + password vault? (C:\ProgramData\NeoFace) [y/N]"
-if ($confirm -eq "y" -or $confirm -eq "Y") {
-    Remove-Item "C:\ProgramData\NeoFace" -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "  Data removed" -ForegroundColor Green
+# --- [5/6] Remove shortcuts ---------------------------------------------
+Write-Host "`n[5/6] Removing shortcuts..." -ForegroundColor Yellow
+$lnkDirs = @(
+    (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"),
+    (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"),
+    [Environment]::GetFolderPath('Desktop'),
+    (Join-Path $env:PUBLIC "Desktop")
+) | Where-Object { $_ } | Select-Object -Unique
+$foundLnk = 0
+try {
+    $wsh = New-Object -ComObject WScript.Shell
+    foreach ($dir in $lnkDirs) {
+        if (!(Test-Path $dir)) { continue }
+        Get-ChildItem -Path $dir -Filter *.lnk -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $tgt = $wsh.CreateShortcut($_.FullName).TargetPath
+                $isNeo = ($_.BaseName -like '*NeoFace*') -or
+                         ($tgt -and ($tgt -like "*$ROOT*")) -or
+                         ($tgt -and ($tgt -like "*$CP_DIR*"))
+                if ($isNeo) {
+                    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                    $foundLnk++
+                    $script:removed.Add("Shortcut $($_.FullName)")
+                }
+            } catch { }
+        }
+    }
+} catch { }
+if ($foundLnk -gt 0) { Write-Host "  Removed $foundLnk shortcut(s)" -ForegroundColor Green }
+else { Write-Host "  No NeoFace shortcuts found" -ForegroundColor Gray }
+
+# --- [6/6] User data (prompt, default = keep) ---------------------------
+Write-Host "`n[6/6] User data..." -ForegroundColor Yellow
+if (Test-Path $DATA_DIR) {
+    $doPurge = $false
+    if ($Purge) {
+        $doPurge = $true
+        Write-Host "  -Purge given - wiping user data" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Found $DATA_DIR (face gallery, password vault, logs)" -ForegroundColor Yellow
+        $ans = Read-Host "  Remove user data too? [y/N] (Enter = keep it; type 'purge' to delete)"
+        if ($ans -match '^(y|yes|purge)$') { $doPurge = $true }
+    }
+    if ($doPurge) {
+        try {
+            Remove-Item -LiteralPath $DATA_DIR -Recurse -Force -ErrorAction Stop
+            $script:removed.Add("$DATA_DIR (face gallery, password vault, logs)")
+            Write-Host "  Data removed" -ForegroundColor Green
+        } catch {
+            $script:failed.Add("$DATA_DIR - $($_.Exception.Message)")
+        }
+    } else {
+        $script:kept.Add("$DATA_DIR (face gallery, password vault, logs) - kept for reinstall")
+        Write-Host "  Kept $DATA_DIR (reinstall-friendly)" -ForegroundColor Yellow
+    }
 } else {
-    Write-Host "  Data kept at C:\ProgramData\NeoFace" -ForegroundColor Yellow
+    Write-Host "  No user data folder found" -ForegroundColor Gray
 }
 
-Write-Host "`n=== Uninstalled ===" -ForegroundColor Cyan
-Write-Host "NeoFace removed. PIN login restored as default."
+# --- Report ---------------------------------------------------------------
+Write-Host "`n=== Uninstall Summary ===" -ForegroundColor Cyan
+if ($script:removed.Count -gt 0) {
+    Write-Host "`nRemoved:" -ForegroundColor Green
+    foreach ($i in $script:removed) { Write-Host "  - $i" -ForegroundColor Gray }
+}
+if ($script:kept.Count -gt 0) {
+    Write-Host "`nKept:" -ForegroundColor Yellow
+    foreach ($i in $script:kept) { Write-Host "  - $i" -ForegroundColor Gray }
+}
+if ($script:notes.Count -gt 0) {
+    Write-Host "`nNotes:" -ForegroundColor Yellow
+    foreach ($i in $script:notes) { Write-Host "  - $i" -ForegroundColor Gray }
+}
+if ($script:failed.Count -gt 0) {
+    Write-Host "`nFailed:" -ForegroundColor Red
+    foreach ($i in $script:failed) { Write-Host "  - $i" -ForegroundColor Red }
+}
+
+Write-Host "`nRepository $ROOT was NOT deleted - delete that folder manually to finish." -ForegroundColor Cyan
+Write-Host "PIN login works; the NeoFace tile is gone from the Win+L screen." -ForegroundColor Cyan
+if ($script:notes -match 'reboot') { Write-Host "Reboot to finish removing locked files." -ForegroundColor Yellow }
+
+$code = 0
+if ($script:failed.Count -gt 0) { $code = 1 }
+if ($Pause) { $null = Read-Host "`nPress Enter to close" }
+exit $code
