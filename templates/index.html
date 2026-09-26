@@ -539,13 +539,35 @@
                     ${i.ok ? '<span class="badge badge-green">Ready</span>' : ''}
                     ${i.link ? `<button onclick="switchTab('${i.link}')" class="glass-btn btn-ghost btn-sm">View</button>` : ''}
                     ${i.action ? `<button onclick="setupAction('${i.action}')" class="glass-btn btn-primary btn-sm">${i.btn}</button>` : ''}
-                    ${i.input ? '<input id="pw-input" type="password" placeholder="Windows password" class="glass-input" style="width:180px;padding:7px 12px;font-size:12px">' : ''}
+                    ${i.input ? pwFieldHtml() : ''}
                 </div>
             </div>`;
         });
 
         html += '</div></div>';
         document.getElementById('content').innerHTML = html;
+    }
+
+    // Password input + Show/Hide toggle (shared by Setup and Settings tabs).
+    function pwFieldHtml(placeholder) {
+        const ph = placeholder || 'Windows password';
+        return `<div style="display:flex;align-items:center;gap:6px">
+            <input id="pw-input" type="password" placeholder="${escapeHtml(ph)}" autocomplete="current-password" spellcheck="false" class="glass-input" style="width:180px;padding:7px 12px;font-size:12px">
+            <button type="button" onclick="togglePw(this)" class="glass-btn btn-ghost btn-sm" aria-label="Show password" title="Show password">Show</button>
+        </div>`;
+    }
+
+    function togglePw(btn) {
+        const wrap = btn.parentElement;
+        const input = wrap ? wrap.querySelector('input') : null;
+        if (!input) return;
+        const reveal = input.type === 'password';
+        input.type = reveal ? 'text' : 'password';
+        const label = reveal ? 'Hide' : 'Show';
+        btn.textContent = label;
+        btn.setAttribute('aria-label', label + ' password');
+        btn.setAttribute('title', label + ' password');
+        input.focus();
     }
 
     async function setupAction(action) {
