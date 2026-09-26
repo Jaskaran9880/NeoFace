@@ -66,6 +66,33 @@ cd ..
 python tools\test_unlock.py
 ```
 
+## Uninstall
+
+Run either of these **as Admin** (both raise a UAC prompt if needed):
+
+```bat
+uninstall.bat                        (double-click, repo root)
+```
+```powershell
+.\install\uninstall.ps1              (Admin terminal)
+.\install\uninstall.ps1 -Purge       (Admin terminal, also wipes user data)
+```
+
+What it removes:
+
+- **Lock screen tile**: `FaceUnlockCP.dll` unregistered (`regsvr32 /u`) and `C:\Program Files\NeoFace` deleted — the NeoFace tile disappears from the Win+L screen
+- **Scheduled tasks**: `NeoFace-Daemon` plus any older NeoFace task variants
+- **Processes**: dashboard (port 8080) and daemon, stopped before anything is deleted
+- **Shortcuts**: Start Menu / desktop shortcuts pointing at NeoFace, if any
+
+What it keeps:
+
+- `C:\ProgramData\NeoFace` — face gallery, password vault, logs. Kept by default so a reinstall works; delete it too by answering `y`/`purge` at the prompt or running with `-Purge`
+- `C:\NeoFace` itself (the repo) — uninstall only removes installed components; delete the folder manually to finish
+- Python packages from `requirements.txt` (shared with other projects)
+
+Notes: if the lock screen (LogonUI) is holding the DLL, deletion is scheduled for the next reboot — **reboot to finish**. PIN login keeps working throughout. A summary of removed/kept items is printed at the end (exit code 1 if anything failed).
+
 ## Usage
 
 1. Log in with PIN once (daemon starts automatically at logon)
@@ -129,10 +156,19 @@ C:\NeoFace\
 - PIN required once per boot/wake; face unlock available for all subsequent locks
 - Keep PIN enabled as backup
 
+## Check for Updates
+
+The dashboard's **Settings** tab has a **Check for Updates** card (the header shows a badge when new commits are available). It compares your local clone with the `main` branch on GitHub and shows your local version/SHA, the upstream SHA, how many commits you're behind, and the list of new commits.
+
+- Requires your dashboard API key; results are cached for 5-10 minutes
+- **Read-only**: it only checks — no pull, and your settings, faces, photos, vault, and models are never modified
+- Degrades gracefully: shows "unavailable" instead of erroring when offline, when git isn't installed, or on a zip (non-git) install
+
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
+| Update check unavailable | Git not installed or installed from a zip — clone the repo to enable update checks |
 | "Camera not available" | Stop the daemon first (`Stop-ScheduledTask -TaskName NeoFace-Daemon`), then try again |
 | "Pipe not available" | Start the daemon: `Start-ScheduledTask -TaskName NeoFace-Daemon` |
 | "Face not recognized" | Re-enroll: `python tools\enroll_fast.py`, ensure good lighting |
