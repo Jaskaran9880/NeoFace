@@ -28,9 +28,11 @@ cp/*.dll
 .vs/
 .env
 .dashboard_key
+.update_cache.json
 *.swp
 *.swo
 ~$*
 debug_*.jpg
 Thumbs.db
 Desktop.ini
+logo_old.png
