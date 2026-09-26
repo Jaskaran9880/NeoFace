@@ -768,6 +768,84 @@ def _api_remote_check(local):
     return _finalize(payload)
 
 
+def _fail_soft_payload(err, local=None):
+    """200 + full contract JSON with ok:false - never HTML, never a 5xx."""
+    payload = _update_payload("none", error=err.message)
+    if local:
+        payload["local_sha"] = local.get("sha")
+        payload["local_version"] = local.get("version")
+        payload["dirty"] = bool(local.get("dirty"))
+    if err.cacheable:
+        _save_update_cache(failure=payload)   # 60s backoff, keeps last good copy
+    return _finalize(payload)
+
+
+def _perform_update_check():
+    """One full check: git -> stale cache -> GitHub API -> fail soft."""
+    now = time.time()
+    local = None
+    fetch_error = None
+
+    if _git_exe():
+        try:
+            local = _git_local_info()
+        except UpdateError as exc:
+            if exc.code == "no_repo":
+                return _finalize(_update_payload("none", error=exc.message))
+            fetch_error = exc                      # local git trouble -> try API
+        if local is not None:
+            try:
+                payload = _git_remote_check(local)
+                _save_update_cache(success=payload)
+                return payload
+            except UpdateError as exc:
+                if exc.code == "origin_mismatch":
+                    # Contract: 200, mode "none", error origin_mismatch,
+                    # and NO network call at all. Not cached, so a fixed
+                    # origin is picked up by the very next check.
+                    return _fail_soft_payload(exc, local)
+                fetch_error = exc
+    else:
+        fetch_error = UpdateError("no_git",
+                                  "Git is not installed - cannot read the local repository.")
+
+    # 1) fetch failed -> serve the last good result (up to 7 days) instantly.
+    if fetch_error is not None and fetch_error.code != "no_git":
+        stale = _stale_update_payload(now)
+        if stale is not None:
+            return _stale_response(stale, fetch_error)
+
+    # 2) GitHub REST fallback (git missing, or fetch failed with no cache).
+    try:
+        payload = _api_remote_check(local)
+        _save_update_cache(success=payload)
+        return payload
+    except UpdateError as exc:
+        stale = _stale_update_payload(now)
+        if stale is not None:
+            return _stale_response(stale, exc)
+        return _fail_soft_payload(exc, local)
+
+
+def local_version_info():
+    """{"version": git describe, "sha": short HEAD} - memoized for 60s."""
+    now = time.time()
+    with _VERSION_LOCK:
+        if _VERSION_MEMO["version"] and now - _VERSION_MEMO["at"] < 60:
+            return {"version": _VERSION_MEMO["version"], "sha": _VERSION_MEMO["sha"]}
+        version = FALLBACK_VERSION
+        sha = None
+        if _git_exe():
+            ok, out, _ = _git(["describe", "--tags", "--always"], 5)
+            if ok and out.strip():
+                version = out.strip()
+            ok, out, _ = _git(["rev-parse", "--short=7", "HEAD"], 5)
+            if ok and out.strip():
+                sha = out.strip()
+        _VERSION_MEMO.update({"at": now, "version": version, "sha": sha})
+        return {"version": version, "sha": sha}
+
+
 @app.route("/")
 def index():
     return render_template("index.html", api_key=API_KEY)
