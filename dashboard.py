@@ -1276,6 +1276,68 @@ def api_setup_models():
         return jsonify({"error": str(e)}), 500
 
 
+# --- Windows Hello consent tokens (password-change gate) -----------------
+# Single-use tokens issued by /api/setup/consent; consumed by
+# /api/setup/password. In-memory only: a dashboard restart clears them,
+# which is the desired behaviour (never persist a consent grant).
+_CONSENT_TOKENS = {}
+_CONSENT_TTL = 120          # seconds a grant stays valid
+_CONSENT_COOLDOWN = 5       # min seconds between system prompts
+_consent_state = {"last_prompt": 0.0}
+
+
+def _prune_consent_tokens():
+    now = time.time()
+    for tok in [t for t, exp in _CONSENT_TOKENS.items() if exp <= now]:
+        del _CONSENT_TOKENS[tok]
+
+
+@app.route("/api/setup/consent", methods=["POST"])
+@require_api_key
+def api_setup_consent():
+    """Windows Hello gate for password changes.
+
+    Pops the system UserConsentVerifier prompt (the same one Google
+    Password Manager shows before autofill) via tools/win_consent.ps1 and
+    returns a short-lived, single-use token. /api/setup/password refuses
+    to run without one. Exit 2 from the script means Hello is not
+    configured - we still issue a token because LogonUserW below remains
+    the knowledge factor on such machines.
+    """
+    _prune_consent_tokens()
+    now = time.time()
+    # Anti-spam: never show the system prompt more than once per cooldown.
+    if now - _consent_state["last_prompt"] < _CONSENT_COOLDOWN:
+        return jsonify({"error": "Verification prompt requested too often"}), 429
+    _consent_state["last_prompt"] = now
+    script = os.path.join(ROOT, "tools", "win_consent.ps1")
+    if not os.path.exists(script):
+        return jsonify({"error": "win_consent.ps1 missing"}), 500
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+            capture_output=True, text=True, timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Verification timed out"}), 504
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    code = result.returncode
+    if code in (0, 2):
+        token = secrets.token_urlsafe(32)
+        _CONSENT_TOKENS[token] = time.time() + _CONSENT_TTL
+        return jsonify({
+            "success": True,
+            "token": token,
+            "consent": "hello" if code == 0 else "unavailable",
+        })
+    if code == 1:
+        return jsonify({"error": "Verification declined"}), 403
+    return jsonify({"error": "Verification failed: " +
+                    (result.stderr or "").strip()[-200:]}), 500
+
+
 @app.route("/api/setup/password", methods=["POST"])
 @require_api_key
 def api_setup_password():
