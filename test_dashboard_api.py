@@ -389,7 +389,146 @@ if destructive(26, "/api/photos/clear", "POST"):
 if test_file_path and os.path.exists(test_file_path):
     os.remove(test_file_path)
 
-# ════════════════════════════════════════════════════════════════════
+# ====================================================================
+#  27-32. "CHECK FOR UPDATES" CONTRACT  (GET /api/update/check)
+#  Read-only against the live dashboard on :8080.
+#  Never restarts the dashboard, never clears photos/vault.
+# ====================================================================
+
+UPDATE_ENDPOINT = "/api/update/check"
+UPDATE_REQUIRED_KEYS = (
+    "ok", "mode", "local_sha", "remote_sha",
+    "behind_count", "up_to_date", "commits", "checked_at",
+)
+_ESCAPERS = re.compile(r"escapeHtml|escHtml|\besc\s*\(")
+_update_state = {"endpoint_missing": False}
+
+
+def load_dashboard_key(path=None):
+    """Load the API key from .dashboard_key (same pattern as the module header)."""
+    key_path = path if path else _KEY_FILE
+    if not os.path.exists(key_path):
+        return None
+    with open(key_path) as kf:
+        return kf.read().strip()
+
+
+def _server_reachable(timeout=3):
+    """True if anything answers on BASE_URL (so we can skip gracefully if it is down)."""
+    try:
+        requests.get(BASE_URL + "/api/health", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def update_get(params, label, expected_status=200, timeout=20):
+    """GET the update-check endpoint, log the outcome, return the JSON body on success.
+
+    A 404 is reported as 'endpoint missing - restart dashboard' (the running
+    dashboard process has not loaded the new route) instead of a contract fail.
+    """
+    url = BASE_URL + UPDATE_ENDPOINT
+    try:
+        r = requests.get(url, params=params, timeout=timeout)
+    except Exception as e:
+        log_result(UPDATE_ENDPOINT, "GET", "ERR", "FAIL", "%s: %s" % (label, str(e)[:160]))
+        return None
+
+    status = r.status_code
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text[:300]
+
+    if status == 404:
+        _update_state["endpoint_missing"] = True
+        log_result(UPDATE_ENDPOINT, "GET", 404, "FAIL",
+                   "%s: endpoint missing - restart dashboard" % label)
+        return None
+    if status != expected_status:
+        log_result(UPDATE_ENDPOINT, "GET", status, "FAIL",
+                   "%s: expected %s, body: %s" % (label, expected_status, body))
+        return None
+    log_result(UPDATE_ENDPOINT, "GET", status, "PASS", "%s: body: %s" % (label, body))
+    return body if isinstance(body, dict) else None
+
+
+if not _server_reachable():
+    print("\n[SKIP] update-check tests: no server on %s - start dashboard.py and rerun"
+          % BASE_URL)
+else:
+    update_key = load_dashboard_key() or KEY
+
+    # ── 27. without key -> 401 ──────────────────────────────────────
+    print("\n[27] GET %s (no key -> 401)" % UPDATE_ENDPOINT)
+    update_get({}, "no key", expected_status=401)
+
+    if _update_state["endpoint_missing"]:
+        print("      -> skipping live update-check tests: endpoint missing - restart dashboard")
+    else:
+        # ── 28. with key -> 200 + contract keys ─────────────────────
+        print("\n[28] GET %s (with key -> 200, contract keys)" % UPDATE_ENDPOINT)
+        update_body = update_get({"key": update_key}, "with key", expected_status=200)
+
+        if update_body is None:
+            print("      -> contract checks skipped (request failed; see result above)")
+        else:
+            missing = [k for k in UPDATE_REQUIRED_KEYS if k not in update_body]
+            if missing:
+                log_result(UPDATE_ENDPOINT, "GET", 200, "FAIL",
+                           "contract keys missing: %s" % ", ".join(missing))
+            else:
+                log_result(UPDATE_ENDPOINT, "GET", 200, "PASS",
+                           "contract keys present: %s" % ", ".join(UPDATE_REQUIRED_KEYS))
+
+            # ── 29. git-mode invariants ─────────────────────────────
+            if not missing:
+                print("\n[29] update-check invariants (mode=git)")
+                mode = update_body.get("mode")
+                if mode != "git":
+                    log_result(UPDATE_ENDPOINT, "GET", 200, "PASS",
+                               "mode=%r - git invariants not applicable" % mode)
+                else:
+                    problems = []
+
+                    local_sha = update_body.get("local_sha")
+                    if not (isinstance(local_sha, str) and local_sha.strip()):
+                        problems.append("local_sha empty: %r" % local_sha)
+
+                    behind_raw = update_body.get("behind_count")
+                    try:
+                        behind = int(behind_raw)
+                    except (TypeError, ValueError):
+                        behind = None
+                        problems.append("behind_count not an int: %r" % behind_raw)
+
+                    up_to_date = update_body.get("up_to_date")
+                    if behind is not None and up_to_date != (behind == 0):
+                        problems.append("up_to_date=%r contradicts behind_count=%d"
+                                        % (up_to_date, behind))
+
+                    commits = update_body.get("commits")
+                    if not isinstance(commits, list):
+                        problems.append("commits not a list: %r" % type(commits).__name__)
+                    elif len(commits) > 20:
+                        problems.append("commits length %d > 20" % len(commits))
+
+                    if not isinstance(update_body.get("commits_truncated"), bool):
+                        problems.append("commits_truncated missing/not bool: %r"
+                                        % update_body.get("commits_truncated"))
+
+                    if problems:
+                        log_result(UPDATE_ENDPOINT, "GET", 200, "FAIL",
+                                   "git invariants: %s" % "; ".join(problems))
+                    else:
+                        log_result(UPDATE_ENDPOINT, "GET", 200, "PASS",
+                                   "git invariants ok: local_sha=%s behind=%d commits=%d "
+                                   "commits_truncated=%r"
+                                   % (local_sha[:8], behind, len(commits),
+                                      update_body.get("commits_truncated")))
+
+# ====================================================================
 #  SUMMARY TABLE
 # ════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 80)
