@@ -107,12 +107,64 @@ Write-Host "`n=== NeoFace Uninstaller ===" -ForegroundColor Cyan
 Write-Host "Removes the lock screen tile, scheduled tasks and installed files."
 Write-Host "User data and the C:\NeoFace repository are kept unless you opt in.`n"
 
-# Kill daemon
-Write-Host "`n[1/4] Stopping daemon..."
-Get-CimInstance Win32_Process -Filter "Name LIKE 'python%' AND CommandLine LIKE '%daemon%'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Unregister-ScheduledTask -TaskName "NeoFace-Daemon" -Confirm:$false -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName "NeoFace-Probe" -Confirm:$false -ErrorAction SilentlyContinue
-Write-Host "  Tasks removed" -ForegroundColor Green
+# --- [1/6] Stop processes ------------------------------------------------
+Write-Host "[1/6] Stopping NeoFace processes..." -ForegroundColor Yellow
+
+# 1a. Ask running NeoFace tasks to stop first (graceful path for the daemon)
+try {
+    $runTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue |
+        Where-Object { $_.TaskName -like 'NeoFace*' -and $_.State -eq 'Running' })
+    foreach ($t in $runTasks) {
+        Stop-ScheduledTask -TaskName $t.TaskName -ErrorAction SilentlyContinue
+        Write-Host "  Stopped running task $($t.TaskName)" -ForegroundColor Gray
+    }
+    if ($runTasks.Count -gt 0) { Start-Sleep -Seconds 2 }
+} catch { }
+
+# 1b. Find NeoFace python processes (daemon + dashboard), anchored to install root
+$targetIds = New-Object System.Collections.Generic.List[int]
+$rootRe = [regex]::Escape($ROOT)
+try {
+    Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" | ForEach-Object {
+        if ($_.CommandLine -and $_.CommandLine -match "(?i)$rootRe\\[^\s`"]*(dashboard\.py|daemon_pipe|face_unlock)") {
+            if (!$targetIds.Contains([int]$_.ProcessId)) { $targetIds.Add([int]$_.ProcessId) }
+        }
+    }
+} catch { }
+
+# Safety net: dashboard bound to :8080 - also requires the install root in its command line
+try {
+    Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+        $op = Get-CimInstance Win32_Process -Filter "ProcessId = $($_.OwningProcess)" -ErrorAction SilentlyContinue
+        if ($op -and $op.Name -match '^python' -and $op.CommandLine -and $op.CommandLine -match "(?i)$rootRe\\") {
+            if (!$targetIds.Contains([int]$op.ProcessId)) { $targetIds.Add([int]$op.ProcessId) }
+        }
+    }
+} catch { }
+
+# 1c. Stop them: ask nicely (main window) first, force if still alive
+foreach ($id in $targetIds) {
+    $p = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (!$p) {
+        $script:removed.Add("Process PID $id (already exited)")
+        continue
+    }
+    $label = "Process PID $id ($($p.ProcessName))"
+    $graceful = $false
+    try { $graceful = $p.CloseMainWindow() } catch { }
+    if ($graceful) { $null = $p.WaitForExit(3000) }
+    if (!$p.HasExited) {
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+    if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
+        $script:failed.Add("$label - could not stop")
+    } else {
+        $script:removed.Add($label)
+        Write-Host "  Stopped $label" -ForegroundColor Gray
+    }
+}
+if ($targetIds.Count -eq 0) { Write-Host "  No NeoFace processes running" -ForegroundColor Gray }
 
 # Unregister DLL
 Write-Host "`n[2/4] Unregistering DLL..."
