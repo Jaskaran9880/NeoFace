@@ -573,6 +573,46 @@ else:
                     log_result(UPDATE_ENDPOINT, "GET", 200, "PASS",
                                "3 sequential calls OK in %s" % ", ".join(timings))
 
+# ── 32. XSS guard (static, no server needed) ──────────────────────
+print("\n[32] XSS guard (static): subject/commit rendering goes through escapeHtml")
+_template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "templates", "index.html")
+if not os.path.exists(_template_path):
+    log_result("templates/index.html", "STATIC", "-", "FAIL",
+               "index.html not found - cannot verify XSS guard")
+else:
+    with open(_template_path, encoding="utf-8", errors="replace") as _tf:
+        _src = _tf.read()
+    _xss_problems = []
+
+    if not re.search(r"function\s+escapeHtml\s*\(", _src):
+        _xss_problems.append("escapeHtml() helper not defined")
+
+    # Heuristic: a ${...subject...} interpolation with no escaping call inside it.
+    _raw_subject = []
+    for _m in re.finditer(r"\$\{([^{}]*)\}", _src):
+        _expr = _m.group(1)
+        if re.search(r"\bsubject\b", _expr) and not _ESCAPERS.search(_expr):
+            _raw_subject.append(_expr.strip()[:60])
+    if _raw_subject:
+        _xss_problems.append("unescaped ${...subject...} interpolation(s): %s"
+                             % "; ".join(_raw_subject[:3]))
+
+    # If the update UI is wired into this page, its render path must escape.
+    if UPDATE_ENDPOINT in _src:
+        _i = _src.index(UPDATE_ENDPOINT)
+        _win = _src[max(0, _i - 1500):_i + 4000]
+        if not any(_t in _win for _t in ("escapeHtml", "textContent", "innerText")):
+            _xss_problems.append("update UI fetches endpoint but never escapes "
+                                 "(no escapeHtml/textContent near render)")
+
+    if _xss_problems:
+        log_result("templates/index.html", "STATIC", "-", "FAIL",
+                   "; ".join(_xss_problems)[:300])
+    else:
+        log_result("templates/index.html", "STATIC", "-", "PASS",
+                   "escapeHtml defined; no raw ${...subject...} interpolation")
+
 # ====================================================================
 #  SUMMARY TABLE
 # ════════════════════════════════════════════════════════════════════
