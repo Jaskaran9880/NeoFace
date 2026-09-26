@@ -615,17 +615,23 @@ else:
 
 # ====================================================================
 #  SUMMARY TABLE
-# ════════════════════════════════════════════════════════════════════
+# ====================================================================
 print("\n" + "=" * 80)
 print("  TEST RESULTS SUMMARY")
 print("=" * 80)
 
 pass_count = sum(1 for r in results if r["pass_fail"] == "PASS")
 fail_count = sum(1 for r in results if r["pass_fail"] == "FAIL")
+skip_count = sum(1 for r in results if r["pass_fail"] == "SKIP")
 total = len(results)
+executed = pass_count + fail_count
+rate = (pass_count / executed * 100) if executed else 0.0
 
-print("\n  Total: %d  |  Passed: %d  |  Failed: %d  |  Pass Rate: %.1f%%" % (
-    total, pass_count, fail_count, pass_count / total * 100))
+print("\n  Total: %d  |  Passed: %d  |  Failed: %d  |  Skipped: %d  |  Pass Rate: %.1f%%" % (
+    total, pass_count, fail_count, skip_count, rate))
+if skip_count:
+    print("  %d destructive test(s) skipped - set NEOFACE_TEST_DESTRUCTIVE=1 to run them"
+          % skip_count)
 
 print("\n  %-4s  %-7s  %-35s  %-8s  %-6s  %s" % ("#", "Method", "Endpoint", "Status", "Result", "Notes"))
 print("  " + "-" * 116)
