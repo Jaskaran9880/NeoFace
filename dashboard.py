@@ -702,6 +702,72 @@ def _git_remote_check(local):
     return _finalize(payload)
 
 
+# --- GitHub REST fallback (stdlib urllib, no third-party deps) ------------
+def _github_get(path, timeout=10):
+    """GET api.github.com with the NeoFace-Dashboard user agent."""
+    request = urllib.request.Request(
+        GITHUB_API_BASE + path,
+        headers={"User-Agent": GITHUB_USER_AGENT, "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read()
+    return json.loads(body.decode("utf-8", "replace"))
+
+
+def _api_remote_check(local):
+    """GitHub REST fallback -> mode 'api' payload (used when git is unusable)."""
+    try:
+        branch = _github_get("/branches/main", 8)
+        raw_commits = _github_get("/commits?sha=main&per_page=20", 8)
+    except Exception as exc:
+        raise UpdateError("api_unreachable",
+                          "Network unavailable - GitHub API unreachable (%s)" % exc,
+                          cacheable=True)
+    remote_full = str((((branch or {}).get("commit")) or {}).get("sha") or "")
+    if not remote_full:
+        raise UpdateError("api_unreachable",
+                          "Network unavailable - GitHub returned no branch data.",
+                          cacheable=True)
+
+    commits = []
+    truncated = isinstance(raw_commits, list) and len(raw_commits) > 20
+    if isinstance(raw_commits, list):
+        for item in raw_commits[:20]:
+            if not isinstance(item, dict):
+                continue
+            commit = item.get("commit") or {}
+            author = commit.get("author") or commit.get("committer") or {}
+            sha = str(item.get("sha") or "")
+            if not sha:
+                continue
+            commits.append({
+                "sha": sha,
+                "subject": str(commit.get("message") or "").split("\n")[0].strip(),
+                "date": str(author.get("date") or "")[:10],
+            })
+
+    local_sha = (local or {}).get("sha")
+    remote_sha = remote_full[:7]
+    behind = ahead = None
+    if local_sha:
+        if local_sha == remote_sha:
+            behind, ahead = 0, 0
+            commits, truncated = [], False
+
+    payload = _update_payload("api")
+    payload.update({
+        "local_sha": local_sha,
+        "local_version": (local or {}).get("version"),
+        "dirty": bool((local or {}).get("dirty")),
+        "remote_sha": remote_sha,
+        "behind_count": behind,
+        "ahead_count": ahead,
+        "commits": commits,
+        "commits_truncated": bool(truncated),
+    })
+    return _finalize(payload)
+
+
 @app.route("/")
 def index():
     return render_template("index.html", api_key=API_KEY)
