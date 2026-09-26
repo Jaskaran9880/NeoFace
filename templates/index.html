@@ -504,7 +504,7 @@
             { label: 'SpoofGate (anti-spoof)', ok: antiOk, desc: antiOk ? 'Ready (1.7MB)' : 'Not downloaded - required for security' },
             { label: 'Face photos', ok: s.photos.count > 0, desc: `${s.photos.count} photos enrolled`, link: 'photos' },
             { label: 'Face gallery', ok: s.gallery, desc: s.gallery ? `${s.gallery_templates} templates` : 'Not enrolled', action: s.gallery ? null : 'enroll', btn: 'Enroll' },
-            { label: 'Password vault', ok: s.vault, desc: s.vault ? 'Encrypted' : 'Not set', action: s.vault ? null : 'password', btn: 'Setup', input: !s.vault },
+            { label: 'Password vault', ok: s.vault, desc: s.vault ? 'Encrypted' : 'Not set', action: 'password', btn: s.vault ? 'Change' : 'Setup', input: true },
             { label: 'Lock screen tile', ok: s.dll, desc: s.dll ? 'DLL registered' : 'Not installed' },
             { label: 'Daemon service', ok: s.task, desc: s.task ? 'Installed' : 'Not installed', action: s.task ? null : 'daemon', btn: 'Install' },
         ];
