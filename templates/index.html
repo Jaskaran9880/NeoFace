@@ -574,8 +574,19 @@
         if (action === 'password') {
             const pw = document.getElementById('pw-input')?.value;
             if (!pw) { alert('Enter your Windows password'); return; }
-            const r = await api('/api/setup/password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw}) });
-            alert(r.success ? 'Password vault created!' : 'Error: ' + (r.error || 'unknown'));
+            // Windows Hello gate first (PIN/biometric popup, like Google
+            // Password Manager) - the server rejects the save without it.
+            const c = await api('/api/setup/consent', { method: 'POST' });
+            if (!c.success || !c.token) {
+                alert('Verification failed: ' + (c.error || 'unknown'));
+                return;
+            }
+            const r = await api('/api/setup/password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw, consent_token: c.token}) });
+            if (r.success) {
+                alert(r.updated === false ? 'Password vault created!' : 'Password updated');
+            } else {
+                alert((r.code === 'consent_required' ? 'Windows Hello verification expired - please try again.\n' : '') + 'Error: ' + (r.error || 'unknown'));
+            }
         } else if (action === 'download-models') {
             const btn = document.querySelector(`[onclick="setupAction('download-models')"]`);
             if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
