@@ -869,6 +869,50 @@ def api_health():
     return jsonify({"status": "ok", "version": info["version"], "sha": info["sha"]})
 
 
+@app.route("/api/update/check")
+@require_api_key
+def api_update_check():
+    """Read-only update check. Always 200 + the JSON contract (never HTML).
+
+    ?force=1 bypasses the 300s soft cache. A concurrent check gets 429 while
+    the single-flight lock is held, so two browsers can never fetch at once.
+    """
+    force = request.args.get("force", "").lower() in ("1", "true", "yes", "on")
+
+    if force:
+        # Hard floor: force bypasses the 300s success TTL but never the
+        # network-attempt floor or the 60s failure backoff - otherwise a
+        # forced loop would mean unbounded sequential fetches.
+        data = _read_update_cache()
+        last_attempt = 0
+        for key in ("success", "failure"):
+            entry = data.get(key)
+            if isinstance(entry, dict):
+                last_attempt = max(last_attempt, entry.get("saved_at") or 0)
+        if last_attempt and time.time() - last_attempt < UPDATE_FORCE_MIN_INTERVAL:
+            force = False
+
+    if not force:
+        cached = _fresh_cached_update()
+        if cached is not None:
+            return jsonify(cached)
+
+    if not _UPDATE_LOCK.acquire(blocking=False):
+        resp = jsonify({"error": "A check is already in progress"})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = "10"
+        return resp
+    try:
+        payload = _perform_update_check()
+    except Exception as exc:   # every failure still returns 200 + contract JSON
+        app.logger.exception("update check failed")
+        payload = _update_payload("none",
+                                  error="Update check failed: %s" % (exc or type(exc).__name__))
+    finally:
+        _UPDATE_LOCK.release()
+    return jsonify(_finalize(payload))
+
+
 @app.route("/api/photos")
 @require_api_key
 def api_photos():
