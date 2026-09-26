@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.5 - 2026-09-26
+- Full uninstaller: new double-clickable `uninstall.bat` (auto-elevates) + enhanced `install/uninstall.ps1` — stops dashboard (:8080) and daemon first, removes all NeoFace scheduled tasks, unregisters the lock-screen DLL before deleting files, removes `C:\Program Files\NeoFace` and NeoFace shortcuts
+- User data (`C:\ProgramData\NeoFace`: face gallery, password vault, logs) kept by default for reinstall; `-Purge` switch or `y`/`purge` at the prompt deletes it — the `C:\NeoFace` repo is never touched
+- Handles a DLL locked by the lock screen (LogonUI) by scheduling deletion on reboot; prints a removed/kept/failed summary with exit codes
+- Dashboard: change your Windows password from Settings (password-change option)
+- Windows Hello gate: saving a password now requires the system PIN/biometric prompt (`UserConsentVerifier`, like Google Password Manager) - new `POST /api/setup/consent` issues a single-use 120s token that `POST /api/setup/password` refuses to work without; wrong password never overwrites the vault (server-side `LogonUserW` check)
+- Dashboard: eye toggle to show/hide the password field
+- Fixed dashboard header logo not rendering
+- Destructive-test guard so tests can no longer wipe real gallery/vault data
+
+## 0.4.4 - 2026-09-25
+- Added "Check for Updates" card in dashboard Settings tab, plus header badge when the maintainer pushed new commits to GitHub
+- New `GET /api/update/check` (API-key protected): `git fetch` primary, GitHub API fallback, 5-10 min cache, origin allow-list
+- Shows local version/SHA (`git describe`), upstream SHA, behind count, up to 20 new commits, changes summary, and up-to-date state
+- Update check is read-only: never pulls, never touches gallery/vault/config/models/photos
+- Auto-apply and scheduled polling intentionally deferred to Phase 2
+- Fixed `/api/health` stale hardcoded `0.4.0` version -> now `git describe` with `0.4.3` fallback
+- Rate limiter validates the API key before counting requests; JSON error handlers for API routes (4a58b1e)
+- Settings save now merge-writes so `antispoof_threshold` is preserved; photo thumbnails require auth (b7c7cdd)
+
 ## 0.4.3 - 2026-09-23
 - Credential Provider tile logo: 3-field schema with `CPFT_TILE_IMAGE` (deselected-tile logo via `GetBitmapValue`)
 - Logo assets `cp/icon.bmp` + `cp/tile.bmp` now shipped by deploy_all, register_cp, deploy_boot, and the installer
