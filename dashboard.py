@@ -1,9 +1,13 @@
+import json
 import math
 import os
+import shutil
 import sys
 import subprocess
+import threading
 import time
 import secrets
+import urllib.request
 from functools import wraps
 
 ROOT = os.path.abspath(os.path.dirname(__file__))
@@ -337,6 +341,147 @@ def get_status():
     status["task"] = task_exists
 
     return status
+
+
+# --- Update check (GET /api/update/check) --------------------------------
+# Read-only by contract: ONLY status/rev-parse/describe/remote/fetch/log/diff
+# are ever executed - never pull, checkout, reset, clean, submodule or any
+# config change. Every call is a list-arg subprocess (shell=False) with a hard
+# timeout, UTF-8/errors=replace output and no console window.
+FALLBACK_VERSION = "0.4.3"
+UPDATE_CACHE_FILE = os.path.join(ROOT, ".update_cache.json")
+UPDATE_CACHE_TTL = 300                 # soft TTL for the automatic page-load check
+UPDATE_FAILURE_TTL = 60                # back off after a failed network attempt
+UPDATE_STALE_MAX_AGE = 7 * 24 * 3600   # serve the last good result up to 7 days
+UPDATE_FETCH_TIMEOUT = 15              # git fetch budget (seconds)
+UPDATE_FORCE_MIN_INTERVAL = 30         # hard floor: force still can't hit the network more than once / 30s
+GITHUB_API_BASE = "https://api.github.com/repos/Jaskaran9880/NeoFace"
+GITHUB_USER_AGENT = "NeoFace-Dashboard"
+
+# Origin allow-list, checked BEFORE any network call. Candidates are compared
+# after _normalize_origin() (lowercase, trailing "/" and ".git" stripped).
+ALLOWED_ORIGINS = (
+    "https://github.com/jaskaran9880/neoface",
+    "git@github.com:jaskaran9880/neoface",
+    "ssh://git@github.com/jaskaran9880/neoface",
+)
+
+_UPDATE_LOCK = threading.Lock()   # single-flight: a concurrent check gets 429
+_GIT_EXE = None                   # None = not probed yet, "" = not installed
+_VERSION_MEMO = {"at": 0.0, "version": None, "sha": None}
+_VERSION_LOCK = threading.Lock()
+
+# Self-heal: drop a temp file leaked by a hard kill mid-write so it can never
+# show up as an untracked file in git status.
+try:
+    if os.path.exists(UPDATE_CACHE_FILE + ".tmp"):
+        os.remove(UPDATE_CACHE_FILE + ".tmp")
+except OSError:
+    pass
+
+
+class UpdateError(Exception):
+    """Update check failure with a stable code and a user-facing message.
+
+    cacheable=True marks network failures so they can be cached for 60s and
+    stop every page load from re-hitting a dead network.
+    """
+
+    def __init__(self, code, message=None, cacheable=False):
+        super().__init__(message or code)
+        self.code = code
+        self.message = message or code
+        self.cacheable = cacheable
+
+
+def _git_exe():
+    """Locate git.exe once: PATH first, then the usual Windows install paths."""
+    global _GIT_EXE
+    if _GIT_EXE is not None:
+        return _GIT_EXE or None
+    found = shutil.which("git")
+    if not found:
+        for candidate in (r"C:\Program Files\Git\cmd\git.exe",
+                          r"C:\Program Files (x86)\Git\cmd\git.exe",
+                          r"C:\Program Files\Git\bin\git.exe",
+                          os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe")):
+            if os.path.isfile(candidate):
+                found = candidate
+                break
+    _GIT_EXE = found or ""
+    return found
+
+
+def _git(args, timeout=5):
+    """Run a read-only git command; returns (ok, stdout, stderr).
+
+    List args + shell=False keep the command injection-free; timeouts stop a
+    hung network call from blocking the dashboard; GIT_TERMINAL_PROMPT=0 and
+    GCM_INTERACTIVE=never stop credential helpers from waiting for input;
+    CREATE_NO_WINDOW stops a console flashing up on Windows.
+    """
+    exe = _git_exe()
+    if not exe:
+        return False, "", "git executable not found"
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+    try:
+        result = subprocess.run(
+            [exe] + list(args),
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        return False, "", "git %s timed out after %ss" % (args[0], timeout)
+    except OSError as exc:
+        return False, "", str(exc)
+    return result.returncode == 0, result.stdout or "", result.stderr or ""
+
+
+def _normalize_origin(url):
+    """Lowercase an origin URL and strip trailing slash / .git suffix."""
+    origin = (url or "").strip().lower().rstrip("/")
+    if origin.endswith(".git"):
+        origin = origin[:-4].rstrip("/")
+    return origin
+
+
+def _update_payload(mode="git", error=None):
+    """Empty payload carrying every key of the /api/update/check contract."""
+    return {
+        "ok": mode != "none",
+        "mode": mode,
+        "checked_at": int(time.time()),
+        "cached": False,
+        "cache_age_s": 0,
+        "local_sha": None,
+        "local_version": None,
+        "dirty": False,
+        "remote_sha": None,
+        "behind_count": None,
+        "ahead_count": None,
+        "up_to_date": False,
+        "commits": [],
+        "commits_truncated": False,
+        "changes_summary": "",
+        "impact": "none",
+        "stale": False,
+        "error": error,
+    }
+
+
+def _finalize(payload):
+    """Apply contract invariants: ok and up_to_date are always derived."""
+    payload["ok"] = payload.get("mode") != "none"
+    payload["up_to_date"] = bool(payload["ok"] and payload.get("behind_count") == 0)
+    if not payload.get("checked_at"):
+        payload["checked_at"] = int(time.time())
+    return payload
 
 
 @app.route("/")
