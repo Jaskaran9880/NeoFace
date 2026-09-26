@@ -192,26 +192,47 @@ print("\n[4] GET /api/settings")
 test_get("/api/settings", expected_status=200)
 
 # ── 5. POST /api/settings ──────────────────────────────────────────
+# DESTRUCTIVE: rewrites config.toml (threshold -> 0.35, frames, ...).
+# The original config.toml is backed up first and restored afterwards so
+# an opt-in run never leaves the install with changed settings.
 print("\n[5] POST /api/settings")
-settings_body = {
-    "threshold": 0.35,
-    "frames": 3,
-    "hit_required": 2,
-    "camera_index": 0,
-    "resolution_w": 640,
-    "resolution_h": 480
-}
-test_post("/api/settings", json_data=settings_body, expected_status=200)
+if destructive(5, "/api/settings", "POST"):
+    settings_body = {
+        "threshold": 0.35,
+        "frames": 3,
+        "hit_required": 2,
+        "camera_index": 0,
+        "resolution_w": 640,
+        "resolution_h": 480
+    }
+    _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+    _cfg_backup = None
+    if os.path.exists(_cfg_path):
+        with open(_cfg_path, "rb") as _cf:
+            _cfg_backup = _cf.read()
+    try:
+        test_post("/api/settings", json_data=settings_body, expected_status=200)
+    finally:
+        if _cfg_backup is not None:
+            with open(_cfg_path, "wb") as _cf:
+                _cf.write(_cfg_backup)
+            print("      config.toml restored from pre-test backup")
+        else:
+            print("      WARNING: no config.toml backup to restore")
 
 # ── 6. POST /api/test-scan ─────────────────────────────────────────
+# DESTRUCTIVE: grabs the camera (and the daemon's frame source).
 # Requires camera + engine; expect 200 on success or 500 if no camera
 print("\n[6] POST /api/test-scan")
-test_post("/api/test-scan", json_data={})
+if destructive(6, "/api/test-scan", "POST"):
+    test_post("/api/test-scan", json_data={})
 
 # ── 7. POST /api/enroll ────────────────────────────────────────────
+# DESTRUCTIVE: rebuilds the face gallery (changes template count).
 # Requires gallery + photos; may succeed or return output with 0 templates
 print("\n[7] POST /api/enroll")
-test_post("/api/enroll", json_data={})
+if destructive(7, "/api/enroll", "POST"):
+    test_post("/api/enroll", json_data={})
 
 # ── 8. POST /api/setup/models ──────────────────────────────────────
 print("\n[8] POST /api/setup/models")
@@ -222,16 +243,34 @@ print("\n[9] POST /api/setup/password")
 test_post("/api/setup/password", json_data={"password": "testpass123"}, expected_status=200)
 
 # ── 10. POST /api/setup/daemon ─────────────────────────────────────
+# DESTRUCTIVE: re-registers the NeoFace-Daemon scheduled task.
 print("\n[10] POST /api/setup/daemon")
-test_post("/api/setup/daemon", json_data={}, expected_status=200)
+if destructive(10, "/api/setup/daemon", "POST"):
+    test_post("/api/setup/daemon", json_data={}, expected_status=200)
 
 # ── 11. POST /api/daemon/start ─────────────────────────────────────
+# DESTRUCTIVE: starts the daemon (claims the camera + named pipe).
 print("\n[11] POST /api/daemon/start")
-test_post("/api/daemon/start", json_data={}, expected_status=200)
+_daemon_was_running = False
+if destructive(11, "/api/daemon/start", "POST"):
+    _status_before = test_get("/api/status", expected_status=200)
+    if isinstance(_status_before, dict):
+        try:
+            _daemon_was_running = bool(_status_before.get("daemon", {}).get("running"))
+        except Exception:
+            _daemon_was_running = False
+    test_post("/api/daemon/start", json_data={}, expected_status=200)
 
 # ── 12. POST /api/daemon/stop ──────────────────────────────────────
+# DESTRUCTIVE: stops the daemon. If it was running before test [11] it is
+# started again afterwards so an opt-in run leaves the daemon as it found it.
 print("\n[12] POST /api/daemon/stop")
-test_post("/api/daemon/stop", json_data={}, expected_status=200)
+if destructive(12, "/api/daemon/stop", "POST"):
+    test_post("/api/daemon/stop", json_data={}, expected_status=200)
+    if _daemon_was_running:
+        time.sleep(2)
+        test_post("/api/daemon/start", json_data={}, expected_status=200)
+        print("      daemon was running before [11] - restarted to restore state")
 
 # ── 13. POST /api/troubleshoot/all ─────────────────────────────────
 print("\n[13] POST /api/troubleshoot/all")
@@ -274,46 +313,70 @@ print("\n[22] GET /api/logs?type=cp")
 test_get("/api/logs", expected_status=200, extra_params={"type": "cp"})
 
 # ── 23. POST /api/logs/clear ───────────────────────────────────────
+# DESTRUCTIVE: truncates the daemon / cp logs.
 print("\n[23] POST /api/logs/clear")
-test_post("/api/logs/clear", json_data={"type": "daemon"}, expected_status=200)
+if destructive(23, "/api/logs/clear", "POST"):
+    test_post("/api/logs/clear", json_data={"type": "daemon"}, expected_status=200)
 
 # ── 24. POST /api/photos/upload ────────────────────────────────────
+# DESTRUCTIVE: adds a photo to the real gallery.
 print("\n[24] POST /api/photos/upload")
-# Create a minimal 1x1 PNG for testing
-minimal_png = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-)
-test_file_path = os.path.join(os.environ.get("TEMP", "."), "test_upload.png")
-with open(test_file_path, "wb") as f:
-    f.write(minimal_png)
+test_file_path = None
+if destructive(24, "/api/photos/upload", "POST"):
+    # Create a minimal 1x1 PNG for testing
+    minimal_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+    )
+    test_file_path = os.path.join(os.environ.get("TEMP", "."), "test_upload.png")
+    with open(test_file_path, "wb") as f:
+        f.write(minimal_png)
 
-with open(test_file_path, "rb") as f:
-    # Dashboard expects field name "files" (getlist)
-    files = {"files": ("test_upload.png", f, "image/png")}
-    upload_resp = test_post("/api/photos/upload", files=files, expected_status=200)
+    with open(test_file_path, "rb") as f:
+        # Dashboard expects field name "files" (getlist)
+        files = {"files": ("test_upload.png", f, "image/png")}
+        upload_resp = test_post("/api/photos/upload", files=files, expected_status=200)
 
 # ── 25. DELETE /api/photos/{photo_name} ────────────────────────────
+# DESTRUCTIVE: removes a photo from the real gallery. Prefers the test
+# upload from [24] so a real face photo is only a last resort.
 print("\n[25] DELETE /api/photos/{name}")
-# Re-fetch photos to find the uploaded one
-photos_resp2 = test_get("/api/photos", expected_status=200)
-photo_name = None
-if photos_resp2 and isinstance(photos_resp2, dict):
-    photo_list = photos_resp2.get("photos", [])
-    if isinstance(photo_list, list) and len(photo_list) > 0:
-        photo_name = photo_list[0].get("name")
+if destructive(25, "/api/photos/{name}", "DELETE"):
+    # Re-fetch photos to find the uploaded one
+    photos_resp2 = test_get("/api/photos", expected_status=200)
+    photo_name = None
+    if photos_resp2 and isinstance(photos_resp2, dict):
+        photo_list = photos_resp2.get("photos", [])
+        if isinstance(photo_list, list) and len(photo_list) > 0:
+            # 1) the file we uploaded in [24], 2) any earlier test_upload*, 3) first photo
+            for _p in photo_list:
+                _n = _p.get("name") if isinstance(_p, dict) else None
+                if _n == "test_upload.png":
+                    photo_name = _n
+                    break
+            if not photo_name:
+                for _p in photo_list:
+                    _n = _p.get("name") if isinstance(_p, dict) else None
+                    if _n and _n.startswith("test_upload"):
+                        photo_name = _n
+                        break
+            if not photo_name:
+                photo_name = photo_list[0].get("name")
 
-if photo_name:
-    test_delete("/api/photos/%s" % photo_name, expected_status=200)
-else:
-    # Try deleting the one we just uploaded
-    test_delete("/api/photos/test_upload.png", expected_status=200)
+    if photo_name:
+        test_delete("/api/photos/%s" % photo_name, expected_status=200)
+    else:
+        # Try deleting the one we just uploaded
+        test_delete("/api/photos/test_upload.png", expected_status=200)
 
 # ── 26. POST /api/photos/clear ─────────────────────────────────────
+# DESTRUCTIVE: DELETES EVERY PHOTO in the gallery (requires re-upload +
+# re-enroll afterwards). Opt-in only.
 print("\n[26] POST /api/photos/clear")
-test_post("/api/photos/clear", json_data={}, expected_status=200)
+if destructive(26, "/api/photos/clear", "POST"):
+    test_post("/api/photos/clear", json_data={}, expected_status=200)
 
 # Clean up temp file
-if os.path.exists(test_file_path):
+if test_file_path and os.path.exists(test_file_path):
     os.remove(test_file_path)
 
 # ════════════════════════════════════════════════════════════════════
