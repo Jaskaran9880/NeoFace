@@ -1345,17 +1345,53 @@ def api_setup_password():
     password = data.get("password", "")
     if not password:
         return jsonify({"error": "No password provided"}), 400
+    # Windows Hello consent gate: consume the single-use token BEFORE any
+    # validation so a declined/absent prompt always blocks the vault write
+    # (and so one approval cannot be replayed for several guesses).
+    _prune_consent_tokens()
+    token = data.get("consent_token", "")
+    if not token or _CONSENT_TOKENS.pop(token, None) is None:
+        return jsonify({"error": "Windows Hello verification required",
+                        "code": "consent_required"}), 403
     try:
-        import win32crypt
         import socket
         domain = os.environ.get("USERDOMAIN", socket.gethostname())
-        user = os.environ.get("USERNAME", "perve")
+        user = os.environ.get("USERNAME")
+        if not user:
+            return jsonify({"error": "USERNAME not set"}), 500
+        # Verify against Windows before touching the vault: a typo here would
+        # otherwise silently replace a working cred.bin and break face-unlock
+        # at the logon screen.
+        import ctypes
+        LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT = 2, 0
+        token = ctypes.c_void_p()
+        ok = ctypes.windll.advapi32.LogonUserW(
+            user, domain, password,
+            LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT,
+            ctypes.byref(token),
+        )
+        if not ok:
+            err = ctypes.windll.kernel32.GetLastError()
+            if token:
+                ctypes.windll.kernel32.CloseHandle(token)
+            # 1326 = ERROR_LOGON_FAILURE, 1327 = partial logon (empty pw, etc.)
+            return jsonify({"error": "Password does not match your Windows account"}), 400
+        if token:
+            ctypes.windll.kernel32.CloseHandle(token)
+        import win32crypt
         raw = f"{domain}\n{user}\n{password}".encode("utf-8")
         encrypted = win32crypt.CryptProtectData(raw, None, None, None, None, 0x04)
         os.makedirs(os.path.dirname(CRED_BIN), exist_ok=True)
-        with open(CRED_BIN, "wb") as f:
+        # `updated` distinguishes "vault created" from "vault overwritten" so
+        # the dashboard can confirm a password *change* (the Setup wizard's
+        # Change button rewrites an existing cred.bin).
+        updated = os.path.exists(CRED_BIN)
+        # Atomic replace: a crash mid-write must not corrupt the vault.
+        tmp = CRED_BIN + ".tmp"
+        with open(tmp, "wb") as f:
             f.write(encrypted)
-        return jsonify({"success": True})
+        os.replace(tmp, CRED_BIN)
+        return jsonify({"success": True, "updated": updated})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
