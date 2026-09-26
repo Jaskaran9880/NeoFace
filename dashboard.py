@@ -576,6 +576,58 @@ def _stale_response(stale, err):
     return _finalize(payload)
 
 
+# --- git steps ------------------------------------------------------------
+def _git_local_info():
+    """dirty flag + short sha + git describe; raises UpdateError('no_repo')."""
+    ok, out, _ = _git(["status", "--porcelain", "--untracked-files=no"], 10)
+    dirty = bool(ok and out.strip())
+    ok, out, _ = _git(["rev-parse", "--short=7", "HEAD"], 10)
+    if not ok:
+        raise UpdateError("no_repo", "Not a git repository - cannot check for updates.")
+    sha = out.strip()
+    ok, out, _ = _git(["describe", "--tags", "--always"], 10)
+    version = out.strip() if ok and out.strip() else None
+    return {"sha": sha, "version": version, "dirty": dirty}
+
+
+def _git_check_origin():
+    """Raise UpdateError('origin_mismatch') unless origin is on the allow-list.
+
+    Runs BEFORE fetch so a tampered/foreign remote never causes a fetch.
+    """
+    ok, out, _ = _git(["remote", "get-url", "origin", "--all"], 10)
+    urls = [u for u in (out or "").splitlines() if u.strip()] if ok else []
+    # Every configured URL must be allow-listed: git fetch fails over through
+    # the remote's URL list, so one foreign URL among allowed ones is enough.
+    if not urls or any(_normalize_origin(u) not in ALLOWED_ORIGINS for u in urls):
+        raise UpdateError("origin_mismatch", "origin_mismatch")
+
+
+def _impact_for_paths(paths):
+    """Classify touched paths as docs / dashboard / core (worst wins)."""
+    if not paths:
+        return "none"
+    has_core = has_dashboard = False
+    all_docs = True
+    for path in paths:
+        norm = (path or "").replace("\\", "/").strip().lower()
+        base = norm.rsplit("/", 1)[-1]
+        if norm.startswith(("face_unlock/", "cp/", "models/")):
+            has_core = True
+        if norm == "dashboard.py" or norm.startswith(("templates/", "static/")):
+            has_dashboard = True
+        is_docs = norm.startswith("docs/") or base.startswith("readme") or base.startswith("changelog")
+        if not is_docs:
+            all_docs = False
+    if has_core:
+        return "core"
+    if has_dashboard:
+        return "dashboard"
+    if all_docs:
+        return "docs"
+    return "core"
+
+
 @app.route("/")
 def index():
     return render_template("index.html", api_key=API_KEY)
