@@ -911,7 +911,169 @@
 
     function escapeHtml(t) { return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
+    // ======================== SOFTWARE UPDATES ========================
+    let updateState = { phase: 'idle' };   // idle | checking | up-to-date | behind | error | unavailable
+    let updateInFlight = false;
+
+    function setUpdateState(next) {
+        updateState = next || { phase: 'idle' };
+        updateHeaderBadge();
+        const card = document.getElementById('updates-card');
+        if (card) card.innerHTML = updatesCardHtml(updateState);
+    }
+
+    function updateHeaderBadge() {
+        const el = document.getElementById('updateBadge');
+        if (!el) return;
+        const r = updateState.result;
+        const n = (r && r.ok && typeof r.behind_count === 'number') ? r.behind_count : 0;
+        if (n > 0) {
+            el.textContent = n + ' update' + (n === 1 ? '' : 's') + ' available';
+            el.style.display = 'inline-flex';
+        } else {
+            el.textContent = '';
+            el.style.display = 'none';
+        }
+    }
+
+    function updateStateFrom(r) {
+        if (!r || typeof r !== 'object') return { phase: 'error', message: 'No response from the dashboard.' };
+        if (!r.mode && r.error) return { phase: 'error', message: r.error };   // 401 / 429 / transport
+        if (r.ok === false || r.mode === 'none') {
+            return { phase: 'unavailable', message: r.error || 'Update checks are not available on this install.', result: r };
+        }
+        const base = { result: r, message: r.error || null };
+        if (r.up_to_date) return Object.assign({ phase: 'up-to-date' }, base);
+        if (typeof r.behind_count === 'number' && r.behind_count > 0) return Object.assign({ phase: 'behind' }, base);
+        if (r.error) return Object.assign({ phase: 'error' }, base);
+        return { phase: 'error', message: 'Could not compare this install with GitHub.', result: r };
+    }
+
+    async function checkUpdates(force) {
+        if (updateInFlight) return;                       // in-flight guard
+        updateInFlight = true;
+        setUpdateState({ phase: 'checking', result: updateState.result });
+        try {
+            const r = await api('/api/update/check' + (force ? '?force=1' : ''));
+            setUpdateState(updateStateFrom(r));
+        } catch (e) {
+            setUpdateState({ phase: 'error', message: e && e.message ? e.message : 'Update check failed.', result: updateState.result });
+        } finally {
+            updateInFlight = false;
+        }
+    }
+
+    function updateAgeText(seconds) {
+        if (seconds < 90) return Math.max(0, Math.round(seconds)) + ' seconds';
+        if (seconds < 5400) return Math.round(seconds / 60) + ' minutes';
+        if (seconds < 172800) return Math.round(seconds / 3600) + ' hours';
+        return Math.round(seconds / 86400) + ' days';
+    }
+
+    function updateStaleNote(r) {
+        if (!r || !r.stale) return '';
+        const age = (typeof r.cache_age_s === 'number') ? updateAgeText(r.cache_age_s) : null;
+        return '<p class="detail-text" style="margin-top:8px">Showing the last successful check'
+            + (age ? ' from ' + escapeHtml(age) + ' ago' : '')
+            + ' - the update server could not be reached.</p>';
+    }
+
+    function updateVersionHtml(r) {
+        if (!r || (!r.local_version && !r.local_sha)) {
+            return '<span class="detail-text" id="updateVer">Version not checked yet</span>';
+        }
+        const sha = r.local_sha ? ' &middot; ' + escapeHtml(r.local_sha) : '';
+        return '<span id="updateVer" style="font-family:\'JetBrains Mono\',\'Fira Code\',monospace;font-size:12px;color:#94a3b8">'
+            + escapeHtml(r.local_version || 'unknown') + sha + '</span>';
+    }
+
+    function updateCommitsHtml(r, note) {
+        const list = (r && Array.isArray(r.commits)) ? r.commits : [];
+        if (!list.length) {
+            return note ? '<p class="detail-text" style="margin-top:8px">' + escapeHtml(note) + '</p>' : '';
+        }
+        let html = '<div style="display:flex;flex-direction:column;gap:6px;margin-top:10px;max-height:240px;overflow:auto">';
+        list.slice(0, 20).forEach(function (c) {
+            html += '<div style="font-size:12px;color:#94a3b8;word-break:break-word">'
+                + '<code style="color:#60a5fa">' + escapeHtml(c && c.sha) + '</code>'
+                + ' &middot; ' + escapeHtml(c && c.date)
+                + ' &middot; ' + escapeHtml(c && c.subject)
+                + '</div>';
+        });
+        html += '</div>';
+        if (r && r.commits_truncated) {
+            html += '<p class="detail-text" style="margin-top:8px">Showing the 20 most recent commits - more are listed on GitHub.</p>';
+        }
+        if (note) html += '<p class="detail-text" style="margin-top:8px">' + escapeHtml(note) + '</p>';
+        return html;
+    }
+
+    function updateImpactHtml(impact) {
+        let text = '';
+        if (impact === 'docs') text = 'Impact: documentation only - nothing to restart.';
+        else if (impact === 'dashboard') text = 'Impact: dashboard UI changed - restart the dashboard after updating.';
+        else if (impact === 'core') text = 'Impact: face-unlock core (engine or models) changed - restart the daemon after updating.';
+        else if (impact === 'none') text = 'Impact: no functional changes detected.';
+        return text ? '<p class="detail-text" style="margin-top:6px">' + escapeHtml(text) + '</p>' : '';
+    }
+
+    function updatesCardHtml(s) {
+        const st = s || { phase: 'idle' };
+        const r = st.result || null;
+        let badge = '<span class="badge badge-blue">Not checked</span>';
+        let body = '<p class="detail-text">Compares this install with GitHub. Nothing is downloaded or applied automatically.</p>';
+        let btnLabel = 'Check for Updates';
+        let btnClass = 'glass-btn btn-primary btn-sm';
+
+        if (st.phase === 'checking') {
+            badge = '<span class="badge badge-blue">Checking...</span>';
+            body = '<div class="pulse" style="font-size:13px;color:#94a3b8"><span class="update-spin"></span>Checking GitHub for updates...</div>';
+            btnLabel = 'Checking...';
+        } else if (st.phase === 'up-to-date') {
+            badge = '<span class="badge badge-green">Up to date</span>';
+            body = '<p style="font-size:13px;color:#94a3b8">You are running the latest version.</p>' + updateStaleNote(r);
+        } else if (st.phase === 'behind') {
+            const n = r.behind_count;
+            badge = '<span class="badge badge-red">' + escapeHtml(String(n)) + ' update' + (n === 1 ? '' : 's') + ' available</span>';
+            body = '<p style="font-size:13px;color:#f87171">' + escapeHtml(String(n)) + ' new commit' + (n === 1 ? '' : 's') + ' on origin/main.</p>'
+                + updateCommitsHtml(r)
+                + (r.changes_summary ? '<p class="detail-text" style="margin-top:8px">Changes: ' + escapeHtml(r.changes_summary) + '</p>' : '')
+                + updateImpactHtml(r.impact)
+                + updateStaleNote(r)
+                + '<p style="margin-top:10px;font-size:12px;color:#fbbf24">Run git pull or re-run the installer to update.</p>';
+        } else if (st.phase === 'unavailable') {
+            badge = '<span class="badge badge-gray">Unavailable</span>';
+            body = '<p style="font-size:13px;color:#94a3b8">' + escapeHtml(st.message || 'Update checks are not available on this install.') + '</p>';
+            btnLabel = 'Retry';
+            btnClass = 'glass-btn btn-ghost btn-sm';
+        } else if (st.phase === 'error') {
+            badge = '<span class="badge badge-red">Check failed</span>';
+            body = '<p style="font-size:13px;color:#f87171">' + escapeHtml(st.message || 'Update check failed.') + '</p>'
+                + updateStaleNote(r)
+                + (r && Array.isArray(r.commits) && r.commits.length
+                    ? updateCommitsHtml(r, 'Latest upstream commits (local comparison unavailable).')
+                    : '');
+            btnLabel = 'Retry';
+            btnClass = 'glass-btn btn-ghost btn-sm';
+        }
+
+        return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">'
+            + '<h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Software updates</h2>'
+            + badge
+            + '</div>'
+            + '<div style="margin-bottom:12px">' + updateVersionHtml(r) + '</div>'
+            + '<div id="updateResult">' + body + '</div>'
+            + '<div style="margin-top:16px">'
+            + '<button id="checkUpdateBtn" class="' + btnClass + '" onclick="checkUpdates(true)"'
+            + (st.phase === 'checking' ? ' disabled' : '')
+            + '>' + btnLabel + '</button>'
+            + '</div>';
+    }
+
     renderSetup();
+
+    // One fire-and-forget check per page load; honours the server-side cache.
+    try { checkUpdates(false); } catch (e) { console.error('Update check failed:', e); }
     </script>
 </body>
 </html>
