@@ -238,9 +238,19 @@ if destructive(7, "/api/enroll", "POST"):
 print("\n[8] POST /api/setup/models")
 test_post("/api/setup/models", json_data={})
 
-# ── 9. POST /api/setup/password ────────────────────────────────────
-print("\n[9] POST /api/setup/password")
-test_post("/api/setup/password", json_data={"password": "testpass123"}, expected_status=200)
+# ── 9. POST /api/setup/password (consent gate) ──────────────────────
+# SAFE: posts WITHOUT a Windows Hello consent token, so the server must
+# reject with 403 consent_required before touching the vault. The happy
+# path (PIN prompt -> save) is interactive and cannot be automated; it is
+# exercised manually from the dashboard. Wrong-password checks are also
+# unreachable without a token, so this never mutates cred.bin.
+print("\n[9] POST /api/setup/password (no consent token -> 403)")
+body9 = test_post("/api/setup/password",
+                  json_data={"password": "testpass123"},
+                  expected_status=403)
+if isinstance(body9, dict) and body9.get("code") != "consent_required":
+    log_result("/api/setup/password", "POST", 403, "FAIL",
+               "expected code=consent_required, got: %s" % body9)
 
 # ── 10. POST /api/setup/daemon ─────────────────────────────────────
 # DESTRUCTIVE: re-registers the NeoFace-Daemon scheduled task.
