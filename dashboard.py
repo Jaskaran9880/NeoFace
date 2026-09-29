@@ -1366,7 +1366,19 @@ def api_setup_models():
 # Single-use tokens issued by /api/setup/consent; consumed by
 # /api/setup/password. In-memory only: a dashboard restart clears them,
 # which is the desired behaviour (never persist a consent grant).
+#
+# Value shape: {"exp": <unix expiry>, "method": "hello" | "unavailable"}.
+# `method` records HOW consent was obtained (Hello prompt exit 0 vs exit 2)
+# so /api/setup/password knows whether LogonUserW is still the only remaining
+# knowledge factor (see the MSA rationale there).
+#
+# F4: Flask's threaded server can run prune/issue/consume concurrently - a
+# bare `del` during another thread's prune raises KeyError (500) and
+# mutating the dict while another thread iterates raises RuntimeError.
+# Every read-modify-write of this store therefore happens under _CONSENT_LOCK,
+# and removals always use pop(tok, None) instead of `del`.
 _CONSENT_TOKENS = {}
+_CONSENT_LOCK = threading.Lock()
 _CONSENT_TTL = 120          # seconds a grant stays valid
 _CONSENT_COOLDOWN = 5       # min seconds between system prompts
 _consent_state = {"last_prompt": 0.0}
@@ -1374,8 +1386,11 @@ _consent_state = {"last_prompt": 0.0}
 
 def _prune_consent_tokens():
     now = time.time()
-    for tok in [t for t, exp in _CONSENT_TOKENS.items() if exp <= now]:
-        del _CONSENT_TOKENS[tok]
+    with _CONSENT_LOCK:
+        expired = [t for t, entry in _CONSENT_TOKENS.items()
+                   if not isinstance(entry, dict) or entry.get("exp", 0) <= now]
+        for tok in expired:
+            _CONSENT_TOKENS.pop(tok, None)   # never bare `del` (double-delete race)
 
 
 @app.route("/api/setup/consent", methods=["POST"])
