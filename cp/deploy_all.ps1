@@ -35,6 +35,17 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 Register-ScheduledTask -TaskName "NeoFace-Daemon" -Action $act -Trigger $trig -Settings $set -Principal $principal -Force | Out-Null
 Write-Host "  Daemon task installed (Interactive logon, not Session 0)" -ForegroundColor Green
 
+# 3b. Logon update notifier task (checks for updates at sign-in)
+$pyw = Join-Path (Split-Path (Get-Command python).Source) "pythonw.exe"
+$uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"$ROOT\tools\update_notifier.py`""
+$uTrig = New-ScheduledTaskTrigger -AtLogOn
+$uTrig.Delay = 'PT1M'
+$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+$uPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Unregister-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $uPrin -Force | Out-Null
+Write-Host "  Update notifier task installed (checks at sign-in)" -ForegroundColor Green
+
 # 4. Start daemon now
 Write-Host "[4/4] Starting daemon..."
 Start-ScheduledTask -TaskName "NeoFace-Daemon"
