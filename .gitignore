@@ -29,6 +29,7 @@ cp/*.dll
 .env
 .dashboard_key
 .update_cache.json*
+.update_notify.json*
 *.swp
 *.swo
 ~$*
