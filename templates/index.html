@@ -1102,6 +1102,15 @@
                 + updateImpactHtml(r.impact)
                 + updateStaleNote(r)
                 + '<p style="margin-top:10px;font-size:12px;color:#fbbf24">Run git pull or re-run the installer to update.</p>';
+        } else if (st.phase === 'unknown') {
+            badge = '<span class="badge badge-gray">Comparison unavailable</span>';
+            body = '<p style="font-size:13px;color:#94a3b8">' + escapeHtml(st.message || "Checked GitHub, but couldn't compare with this install (local SHA not comparable).") + '</p>'
+                + updateStaleNote(r)
+                + (r && Array.isArray(r.commits) && r.commits.length
+                    ? updateCommitsHtml(r, 'Latest upstream commits (local comparison unavailable).')
+                    : '');
+            btnLabel = 'Retry';
+            btnClass = 'glass-btn btn-ghost btn-sm';
         } else if (st.phase === 'unavailable') {
             badge = '<span class="badge badge-gray">Unavailable</span>';
             body = '<p style="font-size:13px;color:#94a3b8">' + escapeHtml(st.message || 'Update checks are not available on this install.') + '</p>';
