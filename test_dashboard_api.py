@@ -434,10 +434,17 @@ def update_get(params, label, expected_status=200, timeout=20):
 
     A 404 is reported as 'endpoint missing - restart dashboard' (the running
     dashboard process has not loaded the new route) instead of a contract fail.
+
+    F5: a "key" entry in `params` is moved into the X-API-Key header so the
+    key never appears in the URL (or Werkzeug access logs). Callers keep
+    passing params exactly as before; {} still means "no key -> 401".
     """
     url = BASE_URL + UPDATE_ENDPOINT
+    params = dict(params) if params else {}
+    _key = params.pop("key", None)
+    headers = {"X-API-Key": _key} if _key else {}
     try:
-        r = requests.get(url, params=params, timeout=timeout)
+        r = requests.get(url, params=params, headers=headers, timeout=timeout)
     except Exception as e:
         log_result(UPDATE_ENDPOINT, "GET", "ERR", "FAIL", "%s: %s" % (label, str(e)[:160]))
         return None
@@ -552,8 +559,10 @@ else:
                 for i in range(3):
                     t0 = time.time()
                     try:
+                        # F5: key in the header, never in the query string.
                         rr = requests.get(BASE_URL + UPDATE_ENDPOINT,
-                                          params={"key": update_key}, timeout=20)
+                                          headers={"X-API-Key": update_key},
+                                          timeout=20)
                     except Exception as e:
                         rapid_status, rapid_fail = "ERR", "call %d: %s" % (i + 1, str(e)[:120])
                         break
