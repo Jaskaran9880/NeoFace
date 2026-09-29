@@ -9,8 +9,9 @@ settings GET, logs GET, read-only troubleshoot [15]-[20], update-check 27-32,
 static XSS guard, the scheduled-task read-only query [40], the in-process
 unit tests [34]-[35], and the update-notifier unit tests [41]).
 
-Tests [5] [6] [7] [10] [11] [12] [23] [24] [25] [26] MUTATE the live
-install and are SKIPPED unless the env flag is set:
+Tests [5] [6] [7] [8] [10] [11] [12] [13] [14] [23] [24] [25] [26] have SIDE
+EFFECTS on the live install (config, camera, model downloads, daemon, logs,
+photos) and are SKIPPED unless the env flag is set:
 
     PowerShell:  $env:NEOFACE_TEST_DESTRUCTIVE = "1"; python test_dashboard_api.py
     cmd:         set NEOFACE_TEST_DESTRUCTIVE=1 && python test_dashboard_api.py
@@ -22,11 +23,16 @@ What a destructive run touches (do NOT enable casually):
                                 Backed up and RESTORED automatically.
     [6]  POST /api/test-scan  - grabs the camera
     [7]  POST /api/enroll     - rebuilds the face gallery templates
+    [8]  POST /api/setup/models - runs tools/fetch_fast.py: downloads ~40MB
+                                of models when any model file is missing
     [9]  POST /api/setup/password - SAFE: asserts the Windows Hello consent
                                 gate rejects a save without a token (403)
     [10] POST /api/setup/daemon   - re-registers the scheduled task
     [11] POST /api/daemon/start   - starts the daemon
     [12] POST /api/daemon/stop    - STOPS the daemon
+    [13] POST /api/troubleshoot/all - opens the camera: the "all" branch runs
+                                the same cv2.VideoCapture probe as [6]/[14]
+    [14] POST /api/troubleshoot/camera - opens the camera
     [23] POST /api/logs/clear     - truncates daemon/cp logs
     [24] POST /api/photos/upload  - uploads a test photo
     [25] DELETE /api/photos/...   - deletes a photo
