@@ -717,6 +717,133 @@ else:
                    "escapeHtml defined; no raw ${...subject...} interpolation")
 
 # ====================================================================
+#  34-35. UNIT TESTS - security-critical pure functions (always on)
+#  Read-only: dashboard.py is imported IN-PROCESS, never started as a
+#  server (app.run() is behind `if __name__ == "__main__"`; module import
+#  only builds the Flask app, reads the existing .dashboard_key and defines
+#  routes). No second server on :8080, no git subprocess (the update origin
+#  check runs with _git patched), no network, no camera, no PIN prompt.
+#  Every outcome is logged through log_result() so it lands in the summary;
+#  the whole section is guarded so a failed import logs FAIL rows instead
+#  of crashing the suite.
+# ====================================================================
+_dash = None
+_dash_import_err = None
+try:
+    import dashboard as _dash
+except Exception as _unit_err:
+    _dash_import_err = "%s: %s" % (type(_unit_err).__name__, _unit_err)
+
+# ── 34. unit: origin allow-list ───────────────────────────────────
+print("\n[34] unit: origin allow-list (_normalize_origin / _git_check_origin)")
+if _dash is None:
+    log_result("unit/_normalize_origin", "UNIT", "-", "FAIL",
+               "cannot import dashboard: %s" % str(_dash_import_err)[:180])
+    log_result("unit/_git_check_origin", "UNIT", "-", "FAIL",
+               "skipped - dashboard import failed: %s" % str(_dash_import_err)[:150])
+else:
+    # -- allowed forms must normalize ONTO the allow-list entries --------
+    _bad = []
+    try:
+        _allowed = tuple(_dash.ALLOWED_ORIGINS)
+        _https = _dash._normalize_origin("https://github.com/Jaskaran9880/NeoFace.git")
+        if not _allowed:
+            _bad.append("ALLOWED_ORIGINS is empty")
+        for _raw in ("https://github.com/Jaskaran9880/NeoFace.git",
+                     "https://github.com/Jaskaran9880/NeoFace/",
+                     "https://github.com/Jaskaran9880/NeoFace.git/",
+                     "HTTPS://GitHub.com/Jaskaran9880/NeoFace"):
+            _norm = _dash._normalize_origin(_raw)
+            if _norm != _https:
+                _bad.append("%r -> %r != %r" % (_raw, _norm, _https))
+            elif _norm not in _allowed:
+                _bad.append("%r -> %r not in ALLOWED_ORIGINS" % (_raw, _norm))
+        # ssh form maps to the ssh allow-list entry, never the https one
+        _ssh = _dash._normalize_origin("git@github.com:Jaskaran9880/NeoFace.git")
+        if _ssh != "git@github.com:jaskaran9880/neoface":
+            _bad.append("ssh form -> %r" % _ssh)
+        elif _ssh not in _allowed:
+            _bad.append("ssh form %r not in ALLOWED_ORIGINS" % _ssh)
+        elif _ssh == _https:
+            _bad.append("ssh form normalizes into the https entry (protocol confusion)")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/_normalize_origin allowed forms", "UNIT", "-",
+               "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "https/.git/trailing-slash/mixed-case land on the https entry, "
+               "ssh form on the ssh entry")
+
+    # -- foreign origins must NOT normalize into the allow-list ----------
+    _bad = []
+    try:
+        _foreign = ("https://github.com/jaskaran9880/neoface.evil.com",
+                    "https://evil.com/Jaskaran9880/NeoFace",
+                    "https://evil.com/Jaskaran9880/NeoFace.git",
+                    "http://github.com/jaskaran9880/neoface",
+                    "https://github.com/jaskaran9880/neoface-fork")
+        for _raw in _foreign:
+            if _dash._normalize_origin(_raw) in _dash.ALLOWED_ORIGINS:
+                _bad.append("foreign %r normalized INTO the allow-list" % _raw)
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/_normalize_origin foreign origins", "UNIT", "-",
+               "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "5 foreign origins (evil host, .git suffix, scheme downgrade, "
+               "fork suffix) stay outside ALLOWED_ORIGINS")
+
+    # -- _git_check_origin with _git patched: NO real git, NO network -----
+    _bad = []
+    _git_calls = []
+    _orig_git = getattr(_dash, "_git", None)
+
+    def _fake_git(args, timeout=5):
+        _git_calls.append(list(args))
+        if _fake_git.mode == "ok":
+            return True, "https://github.com/Jaskaran9880/NeoFace.git\n", ""
+        if _fake_git.mode == "mixed":   # one foreign URL among allowed ones
+            return True, ("https://github.com/jaskaran9880/neoface\n"
+                          "https://evil.com/Jaskaran9880/NeoFace.git\n"), ""
+        if _fake_git.mode == "foreign":
+            return True, "https://evil.com/Jaskaran9880/NeoFace\n", ""
+        if _fake_git.mode == "down":
+            return False, "", "git failed / network down"
+        return True, "", ""             # "empty": ok but no origin URLs
+
+    try:
+        _dash._git = _fake_git
+        _fake_git.mode = "ok"
+        try:
+            _dash._git_check_origin()
+        except Exception as _unit_err:
+            _bad.append("allow-listed origin rejected: %r" % _unit_err)
+        for _mode in ("foreign", "mixed", "down", "empty"):
+            _fake_git.mode = _mode
+            _err = None
+            try:
+                _dash._git_check_origin()
+            except Exception as _unit_err:
+                _err = _unit_err
+            if _err is None:
+                _bad.append("mode=%s accepted - no origin_mismatch raised" % _mode)
+            elif getattr(_err, "code", None) != "origin_mismatch":
+                _bad.append("mode=%s raised code=%r, want origin_mismatch"
+                            % (_mode, getattr(_err, "code", None)))
+        if not _git_calls:
+            _bad.append("patched _git was never called - assertions did not run")
+        if not hasattr(_dash.UpdateError("probe"), "code"):
+            _bad.append("UpdateError has no .code attribute")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    finally:
+        _dash._git = _orig_git   # restore - later code can never hit real git
+    log_result("unit/_git_check_origin patched _git", "UNIT", "-",
+               "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "allow-listed passes; foreign/mixed/down/empty fail closed with "
+               "code=origin_mismatch (git patched, %d fake call(s))" % len(_git_calls))
+
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
