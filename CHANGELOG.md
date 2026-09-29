@@ -9,6 +9,7 @@
 - Dashboard: eye toggle to show/hide the password field
 - Fixed dashboard header logo not rendering
 - Destructive-test guard so tests can no longer wipe real gallery/vault data
+- Review fixes: MSA/Hello-only password fallback, consent-store locking, API-mode behind count, log redaction, atomic vault temp file
 
 ## 0.4.4 - 2026-09-25
 - Added "Check for Updates" card in dashboard Settings tab, plus header badge when the maintainer pushed new commits to GitHub
