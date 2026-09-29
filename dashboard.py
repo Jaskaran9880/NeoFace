@@ -1459,7 +1459,12 @@ def api_setup_password():
     # (and so one approval cannot be replayed for several guesses).
     _prune_consent_tokens()
     token = data.get("consent_token", "")
-    if not token or _CONSENT_TOKENS.pop(token, None) is None:
+    # F4: pop under the lock - returns None (instead of KeyError 500) when
+    # another thread already consumed it; expiry is re-checked here because a
+    # token can outlive its TTL between prune and consume.
+    with _CONSENT_LOCK:
+        entry = _CONSENT_TOKENS.pop(token, None) if token else None
+    if not (entry and entry.get("exp", 0) > time.time()):
         return jsonify({"error": "Windows Hello verification required",
                         "code": "consent_required"}), 403
     try:
