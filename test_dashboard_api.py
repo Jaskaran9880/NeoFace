@@ -170,6 +170,35 @@ def test_delete(endpoint, expected_status=None):
         return None
 
 
+# ── F20 helpers: config.toml assertions (destructive test [5] only) ──
+def _toml_flat_get(raw, key):
+    """Flat, last-wins lookup of `key` anywhere in a TOML document.
+
+    Mirrors dashboard._flat_get / daemon_pipe._read_config (flat scan,
+    last occurrence wins), but returns the PARSED value via tomllib so the
+    F20 assertion compares what the daemon actually loads.
+    `raw` is bytes or str; returns None when the key is absent (TOML has no
+    null, so None is unambiguous). Raises ValueError on an unparseable file.
+    """
+    import tomllib  # stdlib since Python 3.11 - repo runs 3.12, no new deps
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    data = tomllib.loads(raw)
+    found = None
+    for section in data.values():
+        if isinstance(section, dict) and key in section:
+            found = section[key]
+    return found
+
+
+def _toml_values_equal(a, b):
+    """True when two parsed TOML values are the same (numeric-tolerant)."""
+    if (isinstance(a, (int, float)) and isinstance(b, (int, float))
+            and not isinstance(a, bool) and not isinstance(b, bool)):
+        return abs(float(a) - float(b)) < 1e-9
+    return a == b
+
+
 print("=" * 80)
 print("  NeoFace Dashboard API Test Suite")
 print("  Time: %s" % datetime.now().isoformat())
