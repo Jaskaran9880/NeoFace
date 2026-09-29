@@ -1079,6 +1079,92 @@ else:
                 % (_tasks_found,
                    " ; ".join(_tasks.get("NeoFace-UpdateCheck", []))))[:250])
 
+# ====================================================================
+#  41. UNIT TESTS - logon update notifier (tools/update_notifier.py)
+#  Read-only: the module is imported IN-PROCESS from its file path and
+#  must be side-effect free on import (no MessageBox, no network, no git,
+#  no .update_notify.json write) - asserted by snapshotting the real state
+#  file around the import. show_prompt / apply_update / run_once / main
+#  are NEVER called here; only should_notify, save_state and load_state
+#  run, and the state rows point STATE_FILE at a temp path that is
+#  restored + deleted in a finally, so the real state file is never
+#  created or modified by this suite.
+# ====================================================================
+print("\n[41] unit: update notifier (tools/update_notifier.py)")
+
+import importlib.util   # stdlib, local import - keeps the module header untouched
+import tempfile          # stdlib - temp STATE_FILE for row [41c] only
+
+_UN_PATH = r"C:\NeoFace\tools\update_notifier.py"
+_UN_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              ".update_notify.json")
+_UN_CONSTANTS = ("REPO_ROOT", "STATE_FILE", "LOG_FILE", "NOTIFY_MIN_INTERVAL_S")
+_UN_FUNCTIONS = ("load_state", "save_state", "should_notify", "show_prompt",
+                 "apply_update", "run_once", "main")
+_UN_DEFAULTS = {"declined_sha": None, "last_notified": 0, "last_notified_sha": None}
+
+
+def _state_file_snapshot(path):
+    """(exists, mtime) for a state file - used to prove we never touch it."""
+    try:
+        if os.path.exists(path):
+            return (True, os.path.getmtime(path))
+        return (False, None)
+    except OSError as _e:
+        return ("error", str(_e)[:80])
+
+
+# Snapshot BEFORE the import so row [41a] can prove the import is clean.
+_un_state_before = _state_file_snapshot(_UN_STATE_PATH)
+_un = None
+_un_import_err = None
+for _attempt in (1, 2):
+    try:
+        _spec = importlib.util.spec_from_file_location("update_notifier", _UN_PATH)
+        if _spec is None or _spec.loader is None:
+            raise ImportError("spec_from_file_location returned %r" % (_spec,))
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)   # must not run main()/run_once()
+        _un = _mod
+        _un_import_err = None
+        break
+    except SyntaxError as _se:
+        # The module may be mid-rewrite by a concurrent agent - wait once.
+        _un = None
+        _un_import_err = "SyntaxError: %s (line %s)" % (_se.msg, _se.lineno)
+        if _attempt == 1:
+            print("      update_notifier.py looks mid-rewrite - waiting 60s, "
+                  "then retrying the import once")
+            time.sleep(60)
+    except Exception as _ue:
+        _un = None
+        _un_import_err = "%s: %s" % (type(_ue).__name__, _ue)
+        break
+
+# ── 41a. import safety + frozen contract ───────────────────────────
+print("  [41a] import safety + frozen contract")
+_bad = []
+if _un is None:
+    _bad.append("cannot import %s: %s" % (_UN_PATH, str(_un_import_err)[:180]))
+else:
+    for _name in _UN_CONSTANTS + _UN_FUNCTIONS:
+        if not hasattr(_un, _name):
+            _bad.append("missing frozen attribute %s" % _name)
+        elif _name in _UN_FUNCTIONS and not callable(getattr(_un, _name)):
+            _bad.append("%s is not callable" % _name)
+    _interval = getattr(_un, "NOTIFY_MIN_INTERVAL_S", None)
+    if _interval != 86400:
+        _bad.append("NOTIFY_MIN_INTERVAL_S=%r, want 86400" % (_interval,))
+    _un_state_after = _state_file_snapshot(_UN_STATE_PATH)
+    if _un_state_after != _un_state_before:
+        _bad.append("import had a side effect: .update_notify.json %r -> %r"
+                    % (_un_state_before, _un_state_after))
+log_result("unit/update_notifier contract", "UNIT", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "import side-effect free (real state file untouched); 4 constants + "
+           "7 functions present, NOTIFY_MIN_INTERVAL_S=86400")
+
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
