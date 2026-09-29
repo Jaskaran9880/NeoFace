@@ -1233,6 +1233,78 @@ log_result("unit/should_notify matrix", "UNIT", "-",
            "declined, 1h/86399s cooldown; %d must-notify incl. exact 24h boundary "
            "at now-last==86400)" % (len(_cases), len(_cases) - _want_true, _want_true))
 
+# ── 41c. state round-trip (temp STATE_FILE, real file untouched) ───
+print("  [41c] state round-trip (STATE_FILE monkeypatched to a temp path)")
+_bad = []
+if _un is None:
+    _bad.append("skipped - update_notifier import failed: %s"
+                % str(_un_import_err)[:150])
+else:
+    _REAL_STATE = getattr(_un, "STATE_FILE", None)
+    _TMP_STATE = os.path.join(tempfile.gettempdir(),
+                              "nb_notifier_state_test.json")
+    _saved = {"declined_sha": "abc123declined",
+              "last_notified": 1790000000,
+              "last_notified_sha": "0123456789abcdef0123456789abcdef01234567"}
+    try:
+        if (not _REAL_STATE
+                or os.path.abspath(_REAL_STATE) == os.path.abspath(_TMP_STATE)):
+            _bad.append("STATE_FILE %r collides with the temp test path - aborting"
+                        % (_REAL_STATE,))
+        else:
+            _un.STATE_FILE = _TMP_STATE
+            for _p in (_TMP_STATE, _TMP_STATE + ".tmp"):
+                if os.path.exists(_p):
+                    os.remove(_p)
+
+            # (1) save_state -> load_state round trip
+            _un.save_state(_saved)
+            _loaded = _un.load_state()
+            if _loaded != _saved:
+                _bad.append("round-trip mismatch: saved %r, loaded %r"
+                            % (_saved, _loaded))
+            if os.path.exists(_TMP_STATE + ".tmp"):
+                _bad.append("atomic write left the .tmp file behind")
+
+            # (2) missing file -> defaults
+            os.remove(_TMP_STATE)
+            _defaults = _un.load_state()
+            if _defaults != _UN_DEFAULTS:
+                _bad.append("missing file -> %r, want defaults %r"
+                            % (_defaults, _UN_DEFAULTS))
+
+            # (3) corrupt file -> defaults
+            with open(_TMP_STATE, "w", encoding="utf-8") as _f:
+                _f.write("{not valid json !!!")
+            _corrupt = _un.load_state()
+            if _corrupt != _UN_DEFAULTS:
+                _bad.append("corrupt file -> %r, want defaults %r"
+                            % (_corrupt, _UN_DEFAULTS))
+    except Exception as _e:
+        _bad.append("%s: %s" % (type(_e).__name__, str(_e)[:180]))
+    finally:
+        try:   # restore FIRST, then drop the temp files
+            _un.STATE_FILE = _REAL_STATE
+        except Exception:
+            pass
+        for _p in (_TMP_STATE, _TMP_STATE + ".tmp"):
+            try:
+                if os.path.exists(_p):
+                    os.remove(_p)
+            except OSError:
+                pass
+    _un_state_end = _state_file_snapshot(_UN_STATE_PATH)
+    if _un_state_end != _un_state_before:
+        _bad.append("REAL .update_notify.json changed: %r -> %r"
+                    % (_un_state_before, _un_state_end))
+log_result("unit/update_notifier state", "UNIT", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "round-trip, missing->defaults, corrupt->defaults against a temp "
+           "STATE_FILE; .tmp cleaned up, STATE_FILE restored, real "
+           ".update_notify.json unchanged")
+
+# ====================================================================
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
