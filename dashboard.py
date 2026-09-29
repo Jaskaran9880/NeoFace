@@ -1561,29 +1561,63 @@ def api_setup_password():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/setup/daemon", methods=["POST"])
-@require_api_key
-def api_setup_daemon():
-    try:
-        ps_cmd = """
+_DAEMON_SETUP_PS = r"""
+$ErrorActionPreference = 'Stop'
 $pyw = Join-Path (Split-Path (Get-Command python).Source) "pythonw.exe"
-$script = "${ROOT}\\face_unlock\\daemon_pipe.py"
+$script = "${ROOT}\face_unlock\daemon_pipe.py"
 $act = New-ScheduledTaskAction -Execute $pyw -Argument "`"$script`""
 $trig = New-ScheduledTaskTrigger -AtLogOn
 $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Unregister-ScheduledTask -TaskName "NeoFace-Daemon" -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName "NeoFace-Daemon" -Action $act -Trigger $trig -Settings $set -Principal $principal -Force | Out-Null
+$uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"${ROOT}\tools\update_notifier.py`""
+$uTrig = New-ScheduledTaskTrigger -AtLogOn
+$uTrig.Delay = 'PT1M'
+$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+$uPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+Unregister-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $uPrin -Force | Out-Null
 Write-Host "OK"
 """
+
+
+@app.route("/api/setup/daemon", methods=["POST"])
+@require_api_key
+def api_setup_daemon():
+    # The registration script lives in a FILE so ${ROOT} can be substituted
+    # with the real repo path here: the old inline `powershell -Command`
+    # string kept ${ROOT} literal (Python never interpolates it) and
+    # PowerShell expanded an empty $ROOT, which is how the daemon task got
+    # the path "\face_unlock\daemon_pipe.py".
+    script_path = None
+    try:
+        # escape ` and $ so the real path survives the double-quoted PS strings
+        root = ROOT.replace("`", "``").replace("$", "`$")
+        fd, script_path = tempfile.mkstemp(prefix="neoface_tasks_", suffix=".ps1")
+        os.close(fd)                            # keep the path, release the fd
+        # utf-8-sig: PowerShell 5.1 needs the BOM to decode the script safely
+        with open(script_path, "w", encoding="utf-8-sig", newline="") as f:
+            f.write(_DAEMON_SETUP_PS.replace("${ROOT}", root))
         result = subprocess.run(
-            ["powershell", "-Command", ps_cmd],
-            capture_output=True, text=True, timeout=30
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", script_path],
+            capture_output=True, text=True, timeout=60
         )
-        success = "OK" in result.stdout
-        return jsonify({"success": success, "output": result.stdout + result.stderr})
+        output = (result.stdout or "") + (result.stderr or "")
+        success = "OK" in (result.stdout or "")
+        return jsonify({"success": success, "output": output})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False,
+                        "output": "Task registration timed out"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        if script_path:
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
 
 
 @app.route("/api/daemon/start", methods=["POST"])
