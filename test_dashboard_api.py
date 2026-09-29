@@ -368,12 +368,21 @@ if destructive(12, "/api/daemon/stop", "POST"):
         print("      daemon was running before [11] - restarted to restore state")
 
 # ── 13. POST /api/troubleshoot/all ─────────────────────────────────
+# DESTRUCTIVE (same class as [6]/[14]): the troubleshoot "all" branch runs
+# the camera diagnostic first - cv2.VideoCapture opens the camera and reads
+# a frame (dashboard.py api_troubleshoot: component == "all" hits the same
+# code path as component == "camera"). Skipped by default so the default
+# run never touches the camera.
 print("\n[13] POST /api/troubleshoot/all")
-test_post("/api/troubleshoot/all", json_data={}, expected_status=200)
+if destructive(13, "/api/troubleshoot/all", "POST"):
+    test_post("/api/troubleshoot/all", json_data={}, expected_status=200)
 
 # ── 14. POST /api/troubleshoot/camera ──────────────────────────────
+# DESTRUCTIVE (same class as [6]): opens the camera and reads a frame.
+# Skipped by default so the default run never touches the camera.
 print("\n[14] POST /api/troubleshoot/camera")
-test_post("/api/troubleshoot/camera", json_data={}, expected_status=200)
+if destructive(14, "/api/troubleshoot/camera", "POST"):
+    test_post("/api/troubleshoot/camera", json_data={}, expected_status=200)
 
 # ── 15. POST /api/troubleshoot/engine ──────────────────────────────
 print("\n[15] POST /api/troubleshoot/engine")
