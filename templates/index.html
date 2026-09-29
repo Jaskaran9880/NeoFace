@@ -966,7 +966,7 @@
     function escapeHtml(t) { return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
     // ======================== SOFTWARE UPDATES ========================
-    let updateState = { phase: 'idle' };   // idle | checking | up-to-date | behind | error | unavailable
+    let updateState = { phase: 'idle' };   // idle | checking | up-to-date | behind | unknown | error | unavailable
     let updateInFlight = false;
 
     function setUpdateState(next) {
@@ -1000,6 +1000,13 @@
         if (r.up_to_date) return Object.assign({ phase: 'up-to-date' }, base);
         if (typeof r.behind_count === 'number' && r.behind_count > 0) return Object.assign({ phase: 'behind' }, base);
         if (r.error) return Object.assign({ phase: 'error' }, base);
+        // API fallback reached GitHub, but this install's local SHA could not
+        // be resolved into an ahead/behind count (e.g. abbreviated or dirty
+        // commit GitHub cannot compare) - be honest about it instead of
+        // reporting the generic "check failed".
+        if (r.mode === 'api' && r.behind_count == null && r.remote_sha) {
+            return { phase: 'unknown', message: "Checked GitHub, but couldn't compare with this install (local SHA not comparable).", result: r };
+        }
         return { phase: 'error', message: 'Could not compare this install with GitHub.', result: r };
     }
 
