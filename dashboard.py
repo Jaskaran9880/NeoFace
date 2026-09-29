@@ -1467,15 +1467,34 @@ def api_setup_password():
     if not (entry and entry.get("exp", 0) > time.time()):
         return jsonify({"error": "Windows Hello verification required",
                         "code": "consent_required"}), 403
+    consent_method = str(entry.get("method") or "unavailable")
+    # How the write was verified; reported to the UI as "verified".
+    verified = "logon"
+    warning = None
     try:
         import socket
         domain = os.environ.get("USERDOMAIN", socket.gethostname())
         user = os.environ.get("USERNAME")
         if not user:
             return jsonify({"error": "USERNAME not set"}), 500
-        # Verify against Windows before touching the vault: a typo here would
-        # otherwise silently replace a working cred.bin and break face-unlock
-        # at the logon screen.
+        # --- Why LogonUserW cannot always gate this write -------------------
+        # LogonUserW only validates classic local/domain password hashes. On a
+        # Microsoft-account (MSA) linked profile - and on passwordless /
+        # Windows Hello-only installs (PIN or biometric, no usable password) -
+        # it fails with ERROR_LOGON_FAILURE even for the CORRECT password. The
+        # old code turned that into a permanent 400 "Password does not match",
+        # so such accounts could never save a vault password at all.
+        # Policy now, driven by HOW consent was obtained (recorded by
+        # /api/setup/consent):
+        #   * "hello"       -> Windows already authenticated the user (PIN or
+        #     biometric), so we allow the vault write when LogonUserW fails,
+        #     but flag it honestly: the password was not checked against
+        #     Windows and, if it is wrong, face-unlock falls back to manual
+        #     password entry at the lock screen.
+        #   * "unavailable" -> no second factor exists, so the typed password
+        #     is the only protection: a failed LogonUserW stays a hard 400.
+        # When LogonUserW succeeds, behaviour is unchanged (verified "logon").
+        # --------------------------------------------------------------------
         import ctypes
         LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT = 2, 0
         token = ctypes.c_void_p()
@@ -1488,9 +1507,19 @@ def api_setup_password():
             err = ctypes.windll.kernel32.GetLastError()
             if token:
                 ctypes.windll.kernel32.CloseHandle(token)
-            # 1326 = ERROR_LOGON_FAILURE, 1327 = partial logon (empty pw, etc.)
-            return jsonify({"error": "Password does not match your Windows account"}), 400
-        if token:
+            if consent_method == "hello":
+                # F1: Hello consent passed but Windows cannot validate this
+                # password (MSA-linked / passwordless account) - proceed.
+                verified = "hello_fallback"
+                warning = ("Windows could not validate this password "
+                           "(Microsoft-account or passwordless sign-in cannot "
+                           "be checked from here). If it is wrong, face-unlock "
+                           "will fall back to manual password entry at the "
+                           "lock screen.")
+            else:
+                # 1326 = ERROR_LOGON_FAILURE, 1327 = partial logon (empty pw, etc.)
+                return jsonify({"error": "Password does not match your Windows account"}), 400
+        elif token:
             ctypes.windll.kernel32.CloseHandle(token)
         import win32crypt
         raw = f"{domain}\n{user}\n{password}".encode("utf-8")
