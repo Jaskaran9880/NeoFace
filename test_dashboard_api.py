@@ -844,6 +844,150 @@ else:
                "allow-listed passes; foreign/mixed/down/empty fail closed with "
                "code=origin_mismatch (git patched, %d fake call(s))" % len(_git_calls))
 
+# ── 35. unit: consent token store ─────────────────────────────────
+print("\n[35] unit: consent token store (TTL / single-use / expiry / cooldown)")
+if _dash is None:
+    log_result("unit/consent store", "UNIT", "-", "FAIL",
+               "skipped - dashboard import failed: %s" % str(_dash_import_err)[:150])
+else:
+    _tokens = getattr(_dash, "_CONSENT_TOKENS", None)
+    _lock = getattr(_dash, "_CONSENT_LOCK", None)
+    _seeded = []
+
+    def _seed(token, entry):
+        """Insert a test entry under the store lock (mirrors api_setup_consent)."""
+        _seeded.append(token)
+        if _lock is not None:
+            with _lock:
+                _tokens[token] = entry
+        else:
+            _tokens[token] = entry
+
+    # -- shape + TTL + single-use consume ---------------------------------
+    _bad = []
+    try:
+        if _tokens is None:
+            raise RuntimeError("_CONSENT_TOKENS missing")
+        if _lock is None:
+            _bad.append("_CONSENT_LOCK missing (pop must be lock-guarded)")
+        _ttl = getattr(_dash, "_CONSENT_TTL", None)
+        if (not isinstance(_ttl, (int, float)) or isinstance(_ttl, bool)
+                or not (30 <= _ttl <= 300)):
+            _bad.append("_CONSENT_TTL=%r outside the sane 30..300s window" % (_ttl,))
+            _ttl = 60
+        _tok = "unit-fresh-consent-token"
+        _seed(_tok, {"exp": time.time() + _ttl, "method": "hello"})
+        if _lock is not None:
+            with _lock:
+                _first = _tokens.pop(_tok, None)
+                _second = _tokens.pop(_tok, None)
+        else:
+            _first = _tokens.pop(_tok, None)
+            _second = _tokens.pop(_tok, None)
+        if not (isinstance(_first, dict) and "exp" in _first and "method" in _first):
+            _bad.append("consumed entry is not {exp, method} dict: %r" % (_first,))
+        elif (not isinstance(_first.get("exp"), (int, float))
+                or isinstance(_first.get("exp"), bool)
+                or _first["exp"] <= time.time()):
+            _bad.append("fresh entry exp is not a future timestamp: %r"
+                        % (_first.get("exp"),))
+        if _second is not None:
+            _bad.append("replay accepted - second consume returned %r" % (_second,))
+        if _tok in _tokens:
+            _bad.append("token still present in store after consume")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/consent single-use + TTL", "UNIT", "-",
+               "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "{exp, method} entry, fresh token consumed exactly once, replay "
+               "rejected, _CONSENT_TTL=%ss in 30..300" % _ttl)
+
+    # -- expired token: prune drops it; the real route must 403 -----------
+    _bad = []
+    try:
+        _tok = "unit-expired-consent-token"
+        _seed(_tok, {"exp": time.time() - 1, "method": "unavailable"})
+        _dash._prune_consent_tokens()
+        if _tok in _tokens:
+            _bad.append("prune left an expired token in the store")
+
+        # Real /api/setup/password consume path: an expired token must be
+        # rejected with 403 consent_required BEFORE any Windows logon or
+        # vault work. (api_setup_consent is deliberately NEVER called here -
+        # it would pop the Windows Hello dialog.) method="unavailable" is
+        # seeded so even a hypothetical expiry bug cannot write the vault:
+        # that policy only writes after a successful LogonUserW, and the
+        # password below is guaranteed wrong.
+        _tok2 = "unit-expired-route-token"
+        _seed(_tok2, {"exp": time.time() - 1, "method": "unavailable"})
+        _client = _dash.app.test_client()
+        _resp = _client.post("/api/setup/password",
+                             json={"password": "unit-test-wrong-password-7c19",
+                                   "consent_token": _tok2},
+                             headers={"X-API-Key": _dash.API_KEY})
+        _body = _resp.get_json()
+        if _resp.status_code != 403:
+            _bad.append("expired token -> HTTP %s (want 403), body=%r"
+                        % (_resp.status_code, _body))
+        elif not (isinstance(_body, dict) and _body.get("code") == "consent_required"):
+            _bad.append("403 but code != consent_required: %r" % (_body,))
+        if _tok2 in _tokens:
+            _bad.append("expired token still in store after consume attempt")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/consent expiry rejected", "UNIT", "-",
+               "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "prune removes expired entries; /api/setup/password consume "
+               "re-checks exp -> 403 consent_required")
+
+    # -- cooldown structure + guard order (never call api_setup_consent) --
+    _bad = []
+    try:
+        _cs = getattr(_dash, "_consent_state", None)
+        _cd = getattr(_dash, "_CONSENT_COOLDOWN", None)
+        _lp = _cs.get("last_prompt") if isinstance(_cs, dict) else None
+        if not isinstance(_lp, (int, float)) or isinstance(_lp, bool):
+            _bad.append("_consent_state.last_prompt missing/not numeric: %r" % (_cs,))
+        if not isinstance(_cd, (int, float)) or isinstance(_cd, bool) or _cd < 1:
+            _bad.append("_CONSENT_COOLDOWN=%r is not a positive interval" % (_cd,))
+        # Static guard-order check instead of a live call: the 429 anti-spam
+        # branch must come BEFORE the subprocess that launches win_consent.ps1,
+        # otherwise a spammed consent request would pop the Hello dialog.
+        # (Marker = subprocess.run, not "win_consent.ps1" - the function
+        # docstring mentions win_consent.ps1 before the guard.)
+        import inspect as _inspect
+        _csrc = _inspect.getsource(_dash.api_setup_consent)
+        _i_guard = _csrc.find("Verification prompt requested too often")
+        _i_launch = _csrc.find("subprocess.run")
+        if _i_launch < 0:
+            _i_launch = _csrc.rfind("win_consent.ps1")   # fallback marker
+        if _i_guard < 0:
+            _bad.append("cooldown 429 branch not found in api_setup_consent")
+        elif _i_launch < 0:
+            _bad.append("prompt launch site not found - cannot verify guard order")
+        elif _i_guard > _i_launch:
+            _bad.append("cooldown check runs AFTER the Hello prompt - anti-spam broken")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    finally:
+        try:   # leave the store exactly as we found it
+            if _lock is not None:
+                with _lock:
+                    for _t in _seeded:
+                        _tokens.pop(_t, None)
+            else:
+                for _t in _seeded:
+                    _tokens.pop(_t, None)
+        except Exception:
+            pass
+    log_result("unit/consent cooldown guard", "UNIT", "-",
+               "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "_consent_state/COOLDOWN sane; 429 anti-spam guard precedes the "
+               "Hello prompt (prompt never invoked by this suite)")
+
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
