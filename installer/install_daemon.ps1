@@ -9,5 +9,12 @@ $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnB
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "NeoFace-Daemon" -Action $act -Trigger $trig -Settings $set -Principal $principal -Force | Out-Null
 Write-Host "NeoFace-Daemon installed - runs interactively at logon (AC + battery)."
+$uScript = "C:\NeoFace\tools\update_notifier.py"
+$uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"$uScript`""
+$uTrig = New-ScheduledTaskTrigger -AtLogOn
+$uTrig.Delay = 'PT1M'
+$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $principal -Force | Out-Null
+Write-Host "NeoFace-UpdateCheck installed - checks for updates 1 min after logon."
 Write-Host "To start now: Start-ScheduledTask -TaskName 'NeoFace-Daemon'"
 Write-Host "Note: face tile works for Win+L unlock after logon."
