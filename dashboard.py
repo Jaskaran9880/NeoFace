@@ -1,6 +1,8 @@
 import json
+import logging
 import math
 import os
+import re
 import shutil
 import sys
 import subprocess
@@ -19,6 +21,52 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__, template_folder=os.path.join(ROOT, "templates"))
+
+# --- F5: keep the API key out of the Werkzeug access log -----------------
+# Every dashboard request carries ?key=... (photo thumbnails too), so the
+# raw request line would otherwise be printed verbatim to the console.
+# Werkzeug's dev server logs through logging.getLogger("werkzeug") and
+# lazily attaches its default StreamHandler on first request, so the filter
+# is installed on the LOGGER itself (applied before any handler runs) plus
+# whatever handlers already exist. Redaction happens at record level: no
+# route/contract change, the key still works in URLs.
+_API_KEY_LOG_RE = re.compile(r"(key=)[^&\s]+")
+
+
+class _RedactApiKeyFilter(logging.Filter):
+    """Rewrite key=<value> to key=REDACTED in a fully formatted record."""
+
+    def filter(self, record):
+        try:
+            text = record.getMessage()          # resolves msg + args
+        except Exception:
+            return True                         # never break logging itself
+        redacted = _API_KEY_LOG_RE.sub(r"\1REDACTED", text)
+        if redacted != text:
+            record.msg = redacted               # handlers format from msg
+            record.args = ()
+        return True
+
+
+def _install_log_redaction():
+    """Attach the redaction filter to the werkzeug logger and its handlers."""
+    try:
+        redactor = _RedactApiKeyFilter()
+        werkzeug_logger = logging.getLogger("werkzeug")
+        werkzeug_logger.addFilter(redactor)
+        for handler in list(werkzeug_logger.handlers):   # its default StreamHandler
+            handler.addFilter(redactor)
+        # Werkzeug may attach its handler later (first request); records are
+        # redacted by the logger filter first, so late handlers are covered.
+        # Root handlers catch anything that propagates instead.
+        for handler in list(logging.getLogger().handlers):
+            handler.addFilter(redactor)
+    except Exception:
+        pass    # logging setup must never be able to crash startup
+
+
+_install_log_redaction()
+
 
 # --- Authentication ---
 # Dashboard API key: set NEOFACE_API_KEY env var, or it's auto-generated and
