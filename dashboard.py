@@ -801,6 +801,44 @@ def _api_remote_check(local):
         if local_sha == remote_sha:
             behind, ahead = 0, 0
             commits, truncated = [], False
+        else:
+            # F2: local and remote differ - ask GitHub's compare API once for
+            # the real ahead/behind counts, so API-fallback installs no longer
+            # report a bare None and the UI falls back to a generic error.
+            # An abbreviated/dirty local SHA that GitHub cannot resolve comes
+            # back as 404 (raise) -> that is "comparison unavailable", not an
+            # error: counts stay None, no crash, nothing extra is cached.
+            try:
+                comparison = _github_get("/compare/%s...main" % local_sha, 8)
+            except Exception:
+                comparison = None
+            if isinstance(comparison, dict):
+                behind_by = comparison.get("behind_by")
+                ahead_by = comparison.get("ahead_by")
+                if isinstance(behind_by, int) and isinstance(ahead_by, int):
+                    behind, ahead = behind_by, ahead_by
+                    # Prefer the commits GitHub says are actually missing from
+                    # this install over "latest commits on main".
+                    upstream = comparison.get("commits")
+                    if behind == 0:
+                        commits, truncated = [], False
+                    elif isinstance(upstream, list) and upstream:
+                        selected = []
+                        for item in upstream[:20]:
+                            if not isinstance(item, dict):
+                                continue
+                            commit = item.get("commit") or {}
+                            author = commit.get("author") or commit.get("committer") or {}
+                            sha = str(item.get("sha") or "")
+                            if not sha:
+                                continue
+                            selected.append({
+                                "sha": sha,
+                                "subject": str(commit.get("message") or "").split("\n")[0].strip(),
+                                "date": str(author.get("date") or "")[:10],
+                            })
+                        if selected:
+                            commits, truncated = selected, len(upstream) > 20
 
     payload = _update_payload("api")
     payload.update({
