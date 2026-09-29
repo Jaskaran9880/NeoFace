@@ -1429,11 +1429,17 @@ def api_setup_consent():
     code = result.returncode
     if code in (0, 2):
         token = secrets.token_urlsafe(32)
-        _CONSENT_TOKENS[token] = time.time() + _CONSENT_TTL
+        # Record HOW consent was obtained: exit 0 = Hello prompt accepted
+        # (password cannot be re-checked by LogonUserW on MSA installs);
+        # exit 2 = Hello unavailable (typed password stays the only factor).
+        method = "hello" if code == 0 else "unavailable"
+        with _CONSENT_LOCK:
+            _CONSENT_TOKENS[token] = {"exp": time.time() + _CONSENT_TTL,
+                                      "method": method}
         return jsonify({
             "success": True,
             "token": token,
-            "consent": "hello" if code == 0 else "unavailable",
+            "consent": method,
         })
     if code == 1:
         return jsonify({"error": "Verification declined"}), 403
