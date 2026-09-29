@@ -988,6 +988,97 @@ else:
                "_consent_state/COOLDOWN sane; 429 anti-spam guard precedes the "
                "Hello prompt (prompt never invoked by this suite)")
 
+# ====================================================================
+#  40. SCHEDULED TASKS PRESENT  (read-only, always on)
+#  Get-ScheduledTask is a pure query: no task is registered, started,
+#  stopped or edited by this test. If the cmdlet itself fails (CIM /
+#  session error) the python side reports FAIL instead of crashing, and a
+#  transiently missing task (concurrent agent re-registering) is retried
+#  once after 30s before the row is marked failed.
+# ====================================================================
+print("\n[40] scheduled tasks: NeoFace-Daemon + NeoFace-UpdateCheck (read-only query)")
+
+import subprocess  # stdlib, local import - keeps the module header untouched
+
+_PS_TASK_QUERY = (
+    "$t = Get-ScheduledTask -TaskName 'NeoFace*' -ErrorAction SilentlyContinue; "
+    "foreach ($x in @($t)) { "
+    "Write-Output ('TASK|' + $x.TaskName); "
+    "foreach ($a in @($x.Actions)) { Write-Output ('ARG|' + [string]$a.Arguments) } }"
+)
+
+
+def _query_neoface_tasks():
+    """Read-only NeoFace* task query -> ({task: [args, ...]}, err_or_None).
+
+    Never raises: a cmdlet/subprocess failure is returned as `err` so the
+    caller can log a FAIL row instead of crashing the suite.
+    """
+    task_args = {}
+    try:
+        cp = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_TASK_QUERY],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60)
+    except Exception as _e:
+        return task_args, "%s: %s" % (type(_e).__name__, str(_e)[:160])
+
+    current = None
+    for _line in ((cp.stdout or "") + "\n" + (cp.stderr or "")).splitlines():
+        _line = _line.strip()
+        if _line.startswith("TASK|"):
+            current = _line[5:].strip()
+            task_args.setdefault(current, [])
+        elif _line.startswith("ARG|") and current is not None:
+            task_args[current].append(_line[4:].strip())
+
+    if not task_args:
+        _err = "no NeoFace* tasks returned (powershell exit %s)" % cp.returncode
+        _stderr = (cp.stderr or "").strip()
+        if _stderr:
+            _err += "; stderr: %s" % _stderr[:140]
+        return task_args, _err
+    return task_args, None
+
+
+def _eval_neoface_tasks(task_args):
+    """Problems list (empty == pass): both tasks present + updater args."""
+    _problems = []
+    if "NeoFace-Daemon" not in task_args:
+        _problems.append("task NeoFace-Daemon not registered")
+    _updater = task_args.get("NeoFace-UpdateCheck")
+    if _updater is None:
+        _problems.append("task NeoFace-UpdateCheck not registered")
+    elif not any("update_notifier.py" in _a for _a in _updater):
+        _problems.append("NeoFace-UpdateCheck action does not run update_notifier.py "
+                         "(args: %s)" % "; ".join(_updater)[:100])
+    return _problems
+
+
+_tasks, _tasks_err = _query_neoface_tasks()
+_tasks_problems = [_tasks_err] if _tasks_err else _eval_neoface_tasks(_tasks)
+if _tasks_problems:
+    # Transient window: a concurrent agent may be re-registering the tasks.
+    print("      -> %s - retrying once in 30s" % "; ".join(_tasks_problems)[:180])
+    time.sleep(30)
+    _tasks2, _tasks_err2 = _query_neoface_tasks()
+    if _tasks_err2 is None:
+        _tasks, _tasks_err = _tasks2, None
+        _tasks_problems = _eval_neoface_tasks(_tasks2)
+    else:
+        _tasks, _tasks_err, _tasks_problems = _tasks2, _tasks_err2, [_tasks_err2]
+
+_tasks_found = ", ".join(sorted(_tasks)) if _tasks else "none"
+if _tasks_problems:
+    log_result("scheduled/NeoFace*", "SCHED", "-", "FAIL",
+               ("found: %s | %s" % (_tasks_found,
+                                    "; ".join(_tasks_problems)))[:250])
+else:
+    log_result("scheduled/NeoFace*", "SCHED", "-", "PASS",
+               ("found: %s | updater action args: %s"
+                % (_tasks_found,
+                   " ; ".join(_tasks.get("NeoFace-UpdateCheck", []))))[:250])
+
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
