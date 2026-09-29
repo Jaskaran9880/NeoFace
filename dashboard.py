@@ -1408,9 +1408,11 @@ def api_setup_consent():
     _prune_consent_tokens()
     now = time.time()
     # Anti-spam: never show the system prompt more than once per cooldown.
-    if now - _consent_state["last_prompt"] < _CONSENT_COOLDOWN:
-        return jsonify({"error": "Verification prompt requested too often"}), 429
-    _consent_state["last_prompt"] = now
+    # (check + set under the lock so two threads cannot both pass it)
+    with _CONSENT_LOCK:
+        if now - _consent_state["last_prompt"] < _CONSENT_COOLDOWN:
+            return jsonify({"error": "Verification prompt requested too often"}), 429
+        _consent_state["last_prompt"] = now
     script = os.path.join(ROOT, "tools", "win_consent.ps1")
     if not os.path.exists(script):
         return jsonify({"error": "win_consent.ps1 missing"}), 500
