@@ -245,6 +245,33 @@ if (Test-Path $CP_DIR) {
     Write-Host "  $CP_DIR not present" -ForegroundColor Gray
 }
 
+# Generated update artifacts in the repo root (source files are NEVER deleted)
+$genFiles = @(
+    ".update_cache.json",
+    ".update_cache.json.tmp",
+    ".update_notify.json",
+    ".update_notify.json.tmp",
+    "update_notifier.log"
+)
+$genRemoved = 0
+foreach ($gf in $genFiles) {
+    $p = Join-Path $ROOT $gf
+    if (Test-Path -LiteralPath $p) {
+        try {
+            Remove-Item -LiteralPath $p -Force -ErrorAction Stop
+            $genRemoved++
+        } catch {
+            $script:failed.Add("Generated file $p - $($_.Exception.Message)")
+        }
+    }
+}
+if ($genRemoved -gt 0) {
+    $script:removed.Add("$genRemoved generated update file(s) in $ROOT (cache/state/log)")
+    Write-Host "  Removed $genRemoved generated update file(s) from $ROOT" -ForegroundColor Green
+} else {
+    Write-Host "  No generated update files found in $ROOT" -ForegroundColor Gray
+}
+
 # --- [5/6] Remove shortcuts ---------------------------------------------
 Write-Host "`n[5/6] Removing shortcuts..." -ForegroundColor Yellow
 $lnkDirs = @(
