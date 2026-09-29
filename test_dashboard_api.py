@@ -316,8 +316,12 @@ if destructive(7, "/api/enroll", "POST"):
     test_post("/api/enroll", json_data={})
 
 # ── 8. POST /api/setup/models ──────────────────────────────────────
+# DESTRUCTIVE: runs tools/fetch_fast.py, which downloads ~40MB of models
+# when any model file is missing (network + disk write). Skipped by default
+# so the default run stays read-only.
 print("\n[8] POST /api/setup/models")
-test_post("/api/setup/models", json_data={})
+if destructive(8, "/api/setup/models", "POST"):
+    test_post("/api/setup/models", json_data={})
 
 # ── 9. POST /api/setup/password (consent gate) ──────────────────────
 # SAFE: posts WITHOUT a Windows Hello consent token, so the server must
