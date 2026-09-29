@@ -1561,6 +1561,25 @@ def api_setup_password():
         return jsonify({"error": str(e)}), 500
 
 
+# --- One-shot elevated re-registration of BOTH scheduled tasks ------------
+# Register-ScheduledTask requires admin: from a normal (non-elevated)
+# dashboard session it fails with "Access is denied", so the complete
+# registration script - NeoFace-Daemon AND NeoFace-UpdateCheck - is written to
+# a temp .ps1 and launched with Start-Process -Verb RunAs (UAC prompt).
+#
+# Two fixes over the old inline `powershell -Command` version:
+#  (a) ${ROOT} placeholders are substituted with the REAL repo path HERE. The
+#      elevated child is a fresh session where the old `$ROOT` variable never
+#      existed, which is how the daemon task used to get "\face_unlock\...".
+#  (b) elevation, so registration no longer dies with Access denied (or
+#      silently produced a broken path) outside an admin console.
+#
+# PS 5.1 keeps -Verb and -RedirectStandardOutput in mutually exclusive
+# parameter sets, so the elevated cmd wrapper owns the redirection: the child
+# powershell's stdout (+stderr) is redirected to a second temp file that the
+# endpoint reads back as `output`. The script ends with Write-Host "OK", which
+# is only reached once BOTH tasks are registered -> the success contract
+# remains `"OK" in output`.
 _DAEMON_SETUP_PS = r"""
 $ErrorActionPreference = 'Stop'
 $pyw = Join-Path (Split-Path (Get-Command python).Source) "pythonw.exe"
@@ -1582,42 +1601,62 @@ Write-Host "OK"
 """
 
 
+def _read_setup_output(path):
+    """Child stdout file -> str ('' when the elevated run never produced one)."""
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 @app.route("/api/setup/daemon", methods=["POST"])
 @require_api_key
 def api_setup_daemon():
-    # The registration script lives in a FILE so ${ROOT} can be substituted
-    # with the real repo path here: the old inline `powershell -Command`
-    # string kept ${ROOT} literal (Python never interpolates it) and
-    # PowerShell expanded an empty $ROOT, which is how the daemon task got
-    # the path "\face_unlock\daemon_pipe.py".
     script_path = None
+    out_path = None
     try:
-        # escape ` and $ so the real path survives the double-quoted PS strings
+        # ${ROOT} -> real path (escape ` and $ for the double-quoted PS strings)
         root = ROOT.replace("`", "``").replace("$", "`$")
         fd, script_path = tempfile.mkstemp(prefix="neoface_tasks_", suffix=".ps1")
         os.close(fd)                            # keep the path, release the fd
+        out_path = script_path + ".out"          # child's redirected stdout
         # utf-8-sig: PowerShell 5.1 needs the BOM to decode the script safely
         with open(script_path, "w", encoding="utf-8-sig", newline="") as f:
             f.write(_DAEMON_SETUP_PS.replace("${ROOT}", root))
+        launcher = (
+            "$ErrorActionPreference='Stop'; "
+            "Start-Process -FilePath 'cmd.exe' -Verb RunAs -Wait -WindowStyle Hidden "
+            "-ArgumentList '/c', 'powershell.exe -NoProfile -ExecutionPolicy Bypass "
+            "-WindowStyle Hidden -File \"{0}\" > \"{1}\" 2>&1'"
+        ).format(script_path, out_path)
         result = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", script_path],
+             "-Command", launcher],
             capture_output=True, text=True, timeout=60
         )
-        output = (result.stdout or "") + (result.stderr or "")
-        success = "OK" in (result.stdout or "")
+        stdout_text = _read_setup_output(out_path) + (result.stdout or "")
+        output = stdout_text + (result.stderr or "")
+        lowered = output.lower()
+        # UAC declined: the child never ran, so only Start-Process' error shows.
+        if "canceled by the user" in lowered or "cancelled by the user" in lowered:
+            return jsonify({"success": False,
+                            "output": "Elevation cancelled - re-register requires admin (UAC)"})
+        success = "OK" in stdout_text
         return jsonify({"success": success, "output": output})
     except subprocess.TimeoutExpired:
+        # UAC left unanswered: never hang the dashboard - clean up in finally.
         return jsonify({"success": False,
-                        "output": "Task registration timed out"})
+                        "output": "Elevation timed out - re-register requires admin (UAC)"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
-        if script_path:
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
+        for path in (script_path, out_path):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 @app.route("/api/daemon/start", methods=["POST"])
