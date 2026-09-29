@@ -176,6 +176,7 @@ The `NeoFace-UpdateCheck` scheduled task runs the same check automatically ~1 mi
 | Problem | Fix |
 |---------|-----|
 | Update check unavailable | Git not installed or installed from a zip — clone the repo to enable update checks |
+| Update prompt doesn't appear | Needs Internet within 5 min of logon; a declined version never re-prompts — check `update_notifier.log` |
 | "Camera not available" | Stop the daemon first (`Stop-ScheduledTask -TaskName NeoFace-Daemon`), then try again |
 | "Pipe not available" | Start the daemon: `Start-ScheduledTask -TaskName NeoFace-Daemon` |
 | "Face not recognized" | Re-enroll: `python tools\enroll_fast.py`, ensure good lighting |
