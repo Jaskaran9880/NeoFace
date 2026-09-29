@@ -1165,6 +1165,74 @@ log_result("unit/update_notifier contract", "UNIT", "-",
            "import side-effect free (real state file untouched); 4 constants + "
            "7 functions present, NOTIFY_MIN_INTERVAL_S=86400")
 
+# ── 41b. should_notify matrix ──────────────────────────────────────
+print("  [41b] should_notify matrix (14 must-not-notify / 3 must-notify, "
+      "24h boundary exact)")
+_bad = []
+if _un is None:
+    _bad.append("skipped - update_notifier import failed: %s"
+                % str(_un_import_err)[:150])
+else:
+    _NOW = 1800000000                 # fixed clock - never depends on wall time
+    _SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def _payload(**_over):
+        _p = {"ok": True, "stale": False, "error": None,
+              "behind_count": 3, "remote_sha": _SHA}
+        _p.update(_over)
+        return _p
+
+    def _state(**_over):
+        _s = dict(_UN_DEFAULTS)
+        _s.update(_over)
+        return _s
+
+    _cases = [
+        # -- must NOT notify -------------------------------------------
+        ("behind_count=0", _payload(behind_count=0), _state(), False),
+        ("behind_count=None", _payload(behind_count=None), _state(), False),
+        ("behind_count='3' (str)", _payload(behind_count="3"), _state(), False),
+        ("behind_count=True (bool)", _payload(behind_count=True), _state(), False),
+        ("stale=True", _payload(stale=True), _state(), False),
+        ("error set", _payload(error="network down"), _state(), False),
+        ("ok=False", _payload(ok=False), _state(), False),
+        ("remote_sha=None", _payload(remote_sha=None), _state(), False),
+        ("remote_sha == declined_sha", _payload(),
+         _state(declined_sha=_SHA), False),
+        ("same sha notified 1h ago", _payload(),
+         _state(last_notified_sha=_SHA, last_notified=_NOW - 3600), False),
+        ("same sha notified 86399s ago (inside 24h)", _payload(),
+         _state(last_notified_sha=_SHA, last_notified=_NOW - 86399), False),
+        ("empty payload {}", {}, _state(), False),
+        ("non-dict payload (str)", "not-a-dict", _state(), False),
+        ("None payload", None, _state(), False),
+        # -- must notify ------------------------------------------------
+        ("fresh behind=3", _payload(), _state(), True),
+        ("behind=1 at exactly 24h (now-last==86400)", _payload(behind_count=1),
+         _state(last_notified_sha=_SHA, last_notified=_NOW - 86400), True),
+        ("behind=3 with unrelated declined_sha", _payload(),
+         _state(declined_sha="ffffffffffffffffffffffffffffffffffffffff"), True),
+    ]
+    _want_true = 0
+    for _label, _p, _s, _want in _cases:
+        if _want:
+            _want_true += 1
+        try:
+            _got = _un.should_notify(_p, _s, now=_NOW)
+        except Exception as _e:
+            _bad.append("%s raised %s: %s" % (_label, type(_e).__name__, _e))
+            continue
+        if not isinstance(_got, bool):
+            _bad.append("%s -> %r (not a bool)" % (_label, _got))
+        elif _got != _want:
+            _bad.append("%s -> %r (want %r)" % (_label, _got, _want))
+log_result("unit/should_notify matrix", "UNIT", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "%d cases ok (%d must-not-notify incl. bool/str behind, stale, error, "
+           "declined, 1h/86399s cooldown; %d must-notify incl. exact 24h boundary "
+           "at now-last==86400)" % (len(_cases), len(_cases) - _want_true, _want_true))
+
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
