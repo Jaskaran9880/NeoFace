@@ -5,7 +5,9 @@
   DESTRUCTIVE TESTS ARE OPT-IN - READ THIS FIRST
 ================================================================================
 By default this suite runs READ-ONLY checks only (health, status, photos GET,
-settings GET, logs GET, troubleshoot, update-check 27-32, static XSS guard).
+settings GET, logs GET, read-only troubleshoot [15]-[20], update-check 27-32,
+static XSS guard, the scheduled-task read-only query [40], the in-process
+unit tests [34]-[35], and the update-notifier unit tests [41]).
 
 Tests [5] [6] [7] [10] [11] [12] [23] [24] [25] [26] MUTATE the live
 install and are SKIPPED unless the env flag is set:
