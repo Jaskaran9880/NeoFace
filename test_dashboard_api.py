@@ -231,23 +231,68 @@ test_get("/api/settings", expected_status=200)
 # DESTRUCTIVE: rewrites config.toml (threshold -> 0.35, frames, ...).
 # The original config.toml is backed up first and restored afterwards so
 # an opt-in run never leaves the install with changed settings.
+# F20: after a SUCCESSFUL save, config.toml must still contain the
+# daemon-critical antispoof_threshold with its pre-test value - that is the
+# entire point of the api_settings_save() merge-write fix. Checked BEFORE
+# the finally-restore below.
 print("\n[5] POST /api/settings")
 if destructive(5, "/api/settings", "POST"):
+    # Key names must match what dashboard.api_settings_save() reads:
+    # camera_width / camera_height. The old resolution_w / resolution_h
+    # names are silently ignored by the endpoint (verified in dashboard.py).
     settings_body = {
         "threshold": 0.35,
         "frames": 3,
         "hit_required": 2,
         "camera_index": 0,
-        "resolution_w": 640,
-        "resolution_h": 480
+        "camera_width": 640,
+        "camera_height": 480
     }
     _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
     _cfg_backup = None
+    _antispoof_before = None
     if os.path.exists(_cfg_path):
         with open(_cfg_path, "rb") as _cf:
             _cfg_backup = _cf.read()
+        try:
+            _antispoof_before = _toml_flat_get(_cfg_backup, "antispoof_threshold")
+        except Exception as _e:
+            log_result("/api/settings#pre", "POST", "-", "FAIL",
+                       "cannot parse config.toml before save: %s" % str(_e)[:150])
     try:
-        test_post("/api/settings", json_data=settings_body, expected_status=200)
+        _settings_resp = test_post("/api/settings", json_data=settings_body,
+                                   expected_status=200)
+        # F20 assertion - only meaningful once the save actually happened.
+        if isinstance(_settings_resp, dict) and _settings_resp.get("saved"):
+            if not os.path.exists(_cfg_path):
+                log_result("/api/settings#merge", "POST", "-", "FAIL",
+                           "config.toml missing after save - cannot verify merge write")
+            else:
+                try:
+                    with open(_cfg_path, "rb") as _cf:
+                        _antispoof_after = _toml_flat_get(_cf.read(),
+                                                          "antispoof_threshold")
+                    if _antispoof_after is None:
+                        log_result("/api/settings#merge", "POST", "-", "FAIL",
+                                   "antispoof_threshold vanished after save "
+                                   "(merge-write regression); pre-test value: %r"
+                                   % (_antispoof_before,))
+                    elif _antispoof_before is not None and not _toml_values_equal(
+                            _antispoof_before, _antispoof_after):
+                        log_result("/api/settings#merge", "POST", "-", "FAIL",
+                                   "antispoof_threshold changed by save: %r -> %r "
+                                   "(merge-write regression)"
+                                   % (_antispoof_before, _antispoof_after))
+                    else:
+                        log_result("/api/settings#merge", "POST", "-", "PASS",
+                                   "antispoof_threshold survives save: %r (pre-test %r)"
+                                   % (_antispoof_after, _antispoof_before))
+                except Exception as _e:
+                    log_result("/api/settings#merge", "POST", "-", "FAIL",
+                               "cannot verify antispoof_threshold after save: %s"
+                               % str(_e)[:150])
+        else:
+            print("      save did not report saved - antispoof merge check skipped")
     finally:
         if _cfg_backup is not None:
             with open(_cfg_path, "wb") as _cf:
