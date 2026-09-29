@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import subprocess
+import tempfile
 import threading
 import time
 import secrets
@@ -1529,12 +1530,33 @@ def api_setup_password():
         # the dashboard can confirm a password *change* (the Setup wizard's
         # Change button rewrites an existing cred.bin).
         updated = os.path.exists(CRED_BIN)
-        # Atomic replace: a crash mid-write must not corrupt the vault.
-        tmp = CRED_BIN + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(encrypted)
-        os.replace(tmp, CRED_BIN)
-        return jsonify({"success": True, "updated": updated})
+        # F8: atomic replace via a UNIQUE temp file in the vault directory.
+        # The old shared `CRED_BIN + ".tmp"` raced between threads and a crash
+        # left a stale cred.tmp behind; mkstemp + os.replace keeps cred.bin
+        # intact on any failure and the finally block guarantees no cred*.tmp
+        # file is ever left in the logs directory.
+        fd, tmp = tempfile.mkstemp(prefix="cred.", suffix=".tmp",
+                                   dir=os.path.dirname(CRED_BIN))
+        committed = False
+        try:
+            with os.fdopen(fd, "wb") as f:   # closes fd on every path
+                f.write(encrypted)
+            os.replace(tmp, CRED_BIN)        # atomic: crash cannot corrupt vault
+            committed = True
+        finally:
+            if not committed:
+                try:
+                    os.close(fd)             # fd still open if fdopen failed
+                except OSError:
+                    pass
+                try:
+                    os.remove(tmp)           # never leave a cred*.tmp behind
+                except OSError:
+                    pass
+        resp = {"success": True, "updated": updated, "verified": verified}
+        if warning:
+            resp["warning"] = warning
+        return jsonify(resp)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
