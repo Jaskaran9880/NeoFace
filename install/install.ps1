@@ -125,6 +125,16 @@ if ($isAdmin) {
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName "NeoFace-Daemon" -Action $act -Trigger $trig -Settings $set -Principal $principal -Force | Out-Null
     Write-Host "  Daemon installed (starts at logon)" -ForegroundColor Green
+    # Logon update notifier (same shape as cp\deploy_all.ps1 / dashboard endpoint)
+    $pyw = Join-Path (Split-Path (Get-Command python).Source) "pythonw.exe"
+    $uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"$ROOT\tools\update_notifier.py`""
+    $uTrig = New-ScheduledTaskTrigger -AtLogOn
+    $uTrig.Delay = 'PT1M'
+    $uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+    $uPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    Unregister-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $uPrin -Force | Out-Null
+    Write-Host "  Update notifier installed (checks at sign-in)" -ForegroundColor Green
 } else {
     if (!$daemonTask) {
         Write-Host "  Run as Admin to install daemon, or run: .\cp\deploy_all.ps1" -ForegroundColor Yellow
