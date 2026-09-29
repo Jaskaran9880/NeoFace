@@ -95,11 +95,14 @@ def log_result(endpoint, method, status_code, pass_fail, notes):
 
 
 def test_get(endpoint, expected_status=None, extra_params=None):
-    params = {"key": KEY}
-    if extra_params:
-        params.update(extra_params)
+    # F5: the API key travels in the X-API-Key header (require_api_key reads
+    # ?key= OR the header), never in the query string, so it cannot leak into
+    # Werkzeug access logs during test runs. extra_params stays in the URL.
+    params = dict(extra_params) if extra_params else {}
+    headers = {"X-API-Key": KEY}
     try:
-        r = requests.get("%s%s" % (BASE_URL, endpoint), params=params, timeout=15)
+        r = requests.get("%s%s" % (BASE_URL, endpoint), params=params,
+                         headers=headers, timeout=15)
         status = r.status_code
         body = ""
         try:
@@ -118,12 +121,15 @@ def test_get(endpoint, expected_status=None, extra_params=None):
 
 
 def test_post(endpoint, json_data=None, expected_status=None, files=None):
-    params = {"key": KEY}
+    # F5: key in the X-API-Key header, not ?key= in the URL (no key in logs).
+    headers = {"X-API-Key": KEY}
     try:
         if files:
-            r = requests.post("%s%s" % (BASE_URL, endpoint), params=params, files=files, timeout=30)
+            r = requests.post("%s%s" % (BASE_URL, endpoint), headers=headers,
+                              files=files, timeout=30)
         else:
-            r = requests.post("%s%s" % (BASE_URL, endpoint), params=params, json=json_data, timeout=30)
+            r = requests.post("%s%s" % (BASE_URL, endpoint), headers=headers,
+                              json=json_data, timeout=30)
 
         status = r.status_code
         body = ""
@@ -143,9 +149,10 @@ def test_post(endpoint, json_data=None, expected_status=None, files=None):
 
 
 def test_delete(endpoint, expected_status=None):
-    params = {"key": KEY}
+    # F5: key in the X-API-Key header, not ?key= in the URL (no key in logs).
+    headers = {"X-API-Key": KEY}
     try:
-        r = requests.delete("%s%s" % (BASE_URL, endpoint), params=params, timeout=10)
+        r = requests.delete("%s%s" % (BASE_URL, endpoint), headers=headers, timeout=10)
         status = r.status_code
         body = ""
         try:
