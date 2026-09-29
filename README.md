@@ -164,6 +164,13 @@ The dashboard's **Settings** tab has a **Check for Updates** card (the header sh
 - **Read-only**: it only checks — no pull, and your settings, faces, photos, vault, and models are never modified
 - Degrades gracefully: shows "unavailable" instead of erroring when offline, when git isn't installed, or on a zip (non-git) install
 
+### Update notifications at logon
+
+The `NeoFace-UpdateCheck` scheduled task runs the same check automatically ~1 min after sign-in (waits for the Internet, up to 5 min) and shows a Yes/No dialog **only** when a fresh result shows you're behind. **Yes** re-verifies the origin allow-list and runs `git pull --ff-only` (non-git installs open GitHub instead); **No** declines that version permanently — dedupe lives in `.update_notify.json` (max 1 prompt per 24h per SHA), failures log one line to `update_notifier.log`.
+
+- Test: `python tools\update_notifier.py --test` (or `--check-only`, `--answer yes|no`)
+- Opt-out (Admin): `Disable-ScheduledTask -TaskName NeoFace-UpdateCheck`
+
 ## Troubleshooting
 
 | Problem | Fix |
