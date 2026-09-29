@@ -583,7 +583,14 @@
             }
             const r = await api('/api/setup/password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw, consent_token: c.token}) });
             if (r.success) {
-                alert(r.updated === false ? 'Password vault created!' : 'Password updated');
+                let msg = r.updated === false ? 'Password vault created!' : 'Password updated';
+                // Server-side warning: Windows could not validate the password
+                // (Microsoft-account / Hello-only install) - never hide it.
+                if (r.warning) {
+                    if (msg.endsWith('!')) msg = msg.slice(0, -1);
+                    msg += '!\n\nWARNING: ' + r.warning;
+                }
+                alert(msg);
             } else {
                 alert((r.code === 'consent_required' ? 'Windows Hello verification expired - please try again.\n' : '') + 'Error: ' + (r.error || 'unknown'));
             }
