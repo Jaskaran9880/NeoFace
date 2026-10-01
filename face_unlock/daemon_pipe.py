@@ -24,6 +24,7 @@ from face_unlock.store import Gallery
 from face_unlock.matcher import cosine_score
 from face_unlock.antispoof import SpoofGate
 from face_unlock.liveness import LivenessChecker
+from face_unlock.camera_warmup import settle, should_retry_scan
 
 PIPE = r"\\.\pipe\NeoFace"
 IMG_SIZE = 320
@@ -128,29 +129,77 @@ liveness = LivenessChecker()
 log(f"daemon loaded - {sum(len(v) for v in gallery.templates.values())} fast templates, antispoof=on (threshold={spoof.threshold}), liveness=on")
 
 class Cam:
+    # Spread sampling: sleep between processed frames so the FRAMES sampled
+    # span ~0.6-0.9s (captures AE settling) instead of landing within ~0.1s.
+    # At 0.3s spacing liveness avg-motion stays inside its 0.3-8.0 window for
+    # natural micro-motion (brightness is already settled by warmup).
+    SPREAD_S = 0.3
+
     def __init__(self):
         self.cap = None
         self.lock = threading.Lock()
         self.latest = None
         self.running = False
         self._thread = None
+        self.open_stats = None   # settle() dict from the last open()
+        self.open_s = 0.0        # seconds spent in the last open()
+
+    @staticmethod
+    def _create_cap():
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    @staticmethod
+    def _read_once(cap):
+        """Direct read for warmup only (grab thread is NOT running yet)."""
+        try:
+            ok, f = cap.read()
+        except Exception:
+            return None
+        return f if ok else None
 
     def open(self):
         if self.cap and self.cap.isOpened():
             return
-        self.cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if self._thread is not None:
+            self._stop_thread()
+        t_open = time.time()
+        # 1) Settle the stream BEFORE the grab thread starts: no read race on
+        #    cap, and the coldest frames after wake are drained here.
+        cap = self._create_cap()
+        self.cap = cap
+        stats = settle(lambda: self._read_once(cap))
+        if stats["frames"] == 0:
+            if time.time() - t_open > 10.0:
+                # Budget spent: a second open+settle could push this request
+                # past the CP's 30s wait -- skip the recreate and fail fast.
+                log(f"{time.strftime('%H:%M:%S')} camera warmup: 0 frames, "
+                    f"recreate skipped (budget spent)")
+            else:
+                # Camera produced nothing at all: release, recreate once, settle again.
+                log(f"{time.strftime('%H:%M:%S')} camera warmup: 0 frames, recreating camera")
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = self._create_cap()
+                self.cap = cap
+                stats = settle(lambda: self._read_once(cap))
+        # 2) Only now start the grab thread, then prime `latest` briefly.
         self.running = True
         self._thread = threading.Thread(target=self._grab, daemon=True)
         self._thread.start()
-        time.sleep(1)
-        for _ in range(5):
-            self.cap.read()
-        time.sleep(0.05)
+        time.sleep(0.15)
+        self.open_stats = stats
+        self.open_s = time.time() - t_open
+        log(f"{time.strftime('%H:%M:%S')} camera open: {self.open_s:.1f}s settle "
+            f"stable={stats['stable']} frames={stats['frames']} black={stats['black']} "
+            f"last_mean={stats['last_mean']}")
 
     def _grab(self):
         while self.running:
