@@ -1493,6 +1493,236 @@ log_result("unit/camera_warmup decision matrix", "UNIT", "-",
            "should_retry_scan 5 cases (good, 0 frames, 0 spoofs - liveness-only "
            "failure must NOT retry); all real bools")
 
+# ── 46. settle() - fake read_fn + fake clock (instant, no camera) ───
+print("\n[46] unit: camera warmup settle (fake read_fn + fake clock)")
+print("  [46] 7 scenarios on a synthetic 0.1s-per-read clock")
+_bad = []
+if _cw is None:
+    _bad.append("skipped - camera_warmup import failed: %s"
+                % str(_cw_import_err)[:150])
+    _cw_default_note = "default time_fn not exercised (import failed)"
+else:
+    _TICK = 0.1       # synthetic seconds 'spent' grabbing each frame
+    _TOL = 1e-6       # 0.1 is not exact in binary floats - allow slack
+
+    class _Runaway(BaseException):
+        """settle() ignored max_s. BaseException so the `except Exception`
+        a conforming settle() wraps around read_fn cannot swallow it and
+        hang the suite."""
+
+    class _FakeFrame(object):
+        def __init__(self, m):
+            self._m = float(m)
+
+        def mean(self):
+            return self._m
+
+    def _make_settle(read_values=None, tick=_TICK, error=None):
+        """(read_fn, time_fn, state): the fake clock only advances when
+        read_fn is called, so settle() finishes instantly."""
+        state = {"t": 0.0, "n": 0, "wall": time.monotonic()}
+
+        def _time_fn():
+            return state["t"]
+
+        def _read_fn():
+            if time.monotonic() - state["wall"] > 10.0:
+                raise _Runaway("settle() still reading after 10s wall clock")
+            state["t"] += tick              # grabbing a frame takes time
+            if error is not None:
+                raise error                 # failed read, loop must continue
+            if read_values is None:
+                return None                 # failed read, no frame counted
+            _m = read_values[state["n"] % len(read_values)]
+            state["n"] += 1
+            return _FakeFrame(_m)
+
+        return _read_fn, _time_fn, state
+
+    def _is_num(_v):
+        return isinstance(_v, (int, float)) and not isinstance(_v, bool)
+
+    def _check(_label, _res, stable=None, frames_min=None, frames_exact=None,
+               elapsed_min=None, elapsed_max=None, black_min=None,
+               black_exact=None, last_mean_in=None):
+        """Record contract violations for one settle() result dict."""
+        if not isinstance(_res, dict):
+            _bad.append("%s -> %r (not a dict)" % (_label, _res))
+            return
+        if sorted(_res.keys()) != sorted(_CW_KEYS):
+            _bad.append("%s keys %r, want %r"
+                        % (_label, sorted(_res.keys()), sorted(_CW_KEYS)))
+            return
+        if stable is not None and (not isinstance(_res["stable"], bool)
+                                   or _res["stable"] is not stable):
+            _bad.append("%s stable=%r, want %r" % (_label, _res["stable"], stable))
+        if frames_exact is not None and _res["frames"] != frames_exact:
+            _bad.append("%s frames=%r, want %d"
+                        % (_label, _res["frames"], frames_exact))
+        if frames_min is not None and not (
+                isinstance(_res["frames"], int)
+                and not isinstance(_res["frames"], bool)
+                and _res["frames"] >= frames_min):
+            _bad.append("%s frames=%r, want >= %d"
+                        % (_label, _res["frames"], frames_min))
+        if elapsed_min is not None and not (
+                _is_num(_res["elapsed"]) and _res["elapsed"] >= elapsed_min - _TOL):
+            _bad.append("%s elapsed=%r, want >= %.3f"
+                        % (_label, _res["elapsed"], elapsed_min))
+        if elapsed_max is not None and not (
+                _is_num(_res["elapsed"]) and _res["elapsed"] <= elapsed_max + _TOL):
+            _bad.append("%s elapsed=%r, want <= %.3f"
+                        % (_label, _res["elapsed"], elapsed_max))
+        if black_exact is not None and _res["black"] != black_exact:
+            _bad.append("%s black=%r, want %d"
+                        % (_label, _res["black"], black_exact))
+        if black_min is not None and not (
+                isinstance(_res["black"], int)
+                and not isinstance(_res["black"], bool)
+                and _res["black"] >= black_min):
+            _bad.append("%s black=%r, want >= %d"
+                        % (_label, _res["black"], black_min))
+        if last_mean_in is not None and _res["last_mean"] not in last_mean_in:
+            _bad.append("%s last_mean=%r, want in %r"
+                        % (_label, _res["last_mean"], last_mean_in))
+
+    def _run(read_values=None, error=None, tick=_TICK):
+        _r, _t, _st = _make_settle(read_values=read_values, tick=tick,
+                                   error=error)
+        return _cw.settle(_r, _t)
+
+    try:
+        # (a) stable wobble: streak builds, returns once elapsed >= min_s
+        _res = _run(read_values=[100.0, 101.0, 99.5])
+        _check("(a) stable sequence", _res, stable=True, frames_min=3,
+               elapsed_min=1.0, elapsed_max=2.0, black_exact=0,
+               last_mean_in=(100.0, 101.0, 99.5))
+    except _Runaway as _e:
+        _bad.append("(a) %s" % _e)
+    except Exception as _e:
+        _bad.append("(a) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+    try:
+        # (b) never within delta: gives up at max_s, stable stays False
+        _res = _run(read_values=[100.0, 200.0])
+        _check("(b) oscillating means", _res, stable=False, frames_min=3,
+               elapsed_min=2.5, elapsed_max=2.7, black_exact=0)
+    except _Runaway as _e:
+        _bad.append("(b) %s" % _e)
+    except Exception as _e:
+        _bad.append("(b) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+    try:
+        # (c) every read fails (falsy): no frames counted, loop continues
+        _res = _run(read_values=None)
+        _check("(c) read_fn -> None", _res, stable=False, frames_exact=0,
+               elapsed_min=2.5, elapsed_max=2.7)
+    except _Runaway as _e:
+        _bad.append("(c) %s" % _e)
+    except Exception as _e:
+        _bad.append("(c) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+    try:
+        # (d) read_fn raises every call: still a dict, never a crash
+        _res = _run(error=RuntimeError("camera exploded"))
+        _check("(d) read_fn raises", _res, stable=False, frames_exact=0,
+               elapsed_min=2.5, elapsed_max=2.7)
+    except _Runaway as _e:
+        _bad.append("(d) %s" % _e)
+    except Exception as _e:
+        _bad.append("(d) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+    try:
+        # (e) frames darker than BLACK_MEAN never advance the streak
+        _res = _run(read_values=[0.0])
+        _check("(e) all-black frames", _res, stable=False, frames_min=1,
+               black_min=1, elapsed_min=2.5, elapsed_max=2.7)
+    except _Runaway as _e:
+        _bad.append("(e) %s" % _e)
+    except Exception as _e:
+        _bad.append("(e) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+    try:
+        # (f) stable from frame 1 but min_s not reached: must keep
+        #     reading (>= min_s/tick = 10 reads), not return at streak==3
+        _res = _run(read_values=[100.0])
+        _check("(f) waits for min_s", _res, stable=True, frames_min=10,
+               elapsed_min=1.0, elapsed_max=2.0, black_exact=0)
+    except _Runaway as _e:
+        _bad.append("(f) %s" % _e)
+    except Exception as _e:
+        _bad.append("(f) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+    # (g) time_fn omitted: exercise the module's own default clock. The
+    # module-level clock name is rebound to a fake object (the stdlib
+    # time module itself is never touched) and the original binding is
+    # restored in finally, so the default path is instant too.
+    _r, _t, _st = _make_settle(read_values=[100.0])
+    _patch_name = None
+    _patch_value = None
+    if hasattr(_cw, "time") and callable(getattr(_cw.time, "monotonic", None)):
+        class _FakeTimeNS(object):
+            def monotonic(self):
+                return _st["t"]
+
+            def perf_counter(self):
+                return _st["t"]
+
+        _patch_name, _patch_value = "time", _FakeTimeNS()
+    elif callable(getattr(_cw, "monotonic", None)):
+        _patch_name = "monotonic"
+
+        def _fake_monotonic():
+            return _st["t"]
+
+        _patch_value = _fake_monotonic
+
+    if _patch_name is None:
+        _cw_default_note = "default time_fn: no module-level clock to patch (skipped)"
+    else:
+        _cw_default_note = "default time.monotonic path exercised"
+        _cw_patch_orig = getattr(_cw, _patch_name)
+        try:
+            setattr(_cw, _patch_name, _patch_value)
+            _res = _cw.settle(_r)
+            _check("(g) default time_fn", _res, stable=True, frames_min=10,
+                   elapsed_min=1.0, elapsed_max=2.0, black_exact=0)
+        except _Runaway as _e:
+            _bad.append("(g) %s" % _e)
+        except Exception as _e:
+            _bad.append("(g) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+        finally:
+            setattr(_cw, _patch_name, _cw_patch_orig)   # restore first
+
+    try:
+        # (h) real numpy ndarray frame: bool(ndarray) is ambiguous, so an
+        #     object whose truth value cannot be evaluated must count as a
+        #     REAL frame -- regression guard for the `if not frame:` break
+        #     that made every production settle raise ValueError.
+        import numpy as _np_h
+        _hb = [0.0]
+
+        def _h_read():
+            _hb[0] += _TICK
+            return _np_h.full((8, 8, 3), 100, "uint8")
+
+        _res = _cw.settle(_h_read, lambda: _hb[0])
+        _check("(h) real ndarray frame", _res, stable=True, frames_min=3,
+               elapsed_min=1.0, elapsed_max=2.0, black_exact=0,
+               last_mean_in=(100.0,))
+    except _Runaway as _e:
+        _bad.append("(h) %s" % _e)
+    except Exception as _e:
+        _bad.append("(h) raised %s: %s" % (type(_e).__name__, str(_e)[:150]))
+
+log_result("unit/camera_warmup settle", "UNIT", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "fake clock 0.1s/read (no real waiting, no camera): stable -> True at "
+           "min_s, oscillation -> False at max_s, None/raising read_fn -> 0 "
+           "frames, all-black -> black>0 & never stable, keeps reading until "
+           "min_s, real ndarray -> stable; %s" % _cw_default_note)
+
 # ====================================================================
 #  SUMMARY TABLE
 # ====================================================================
