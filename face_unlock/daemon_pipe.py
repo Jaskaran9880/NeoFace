@@ -324,37 +324,69 @@ while True:
             faces_seen = 0
             spoofs_rejected = 0
             liveness_rejected = 0
-            for _ in range(FRAMES):
-                ok, f = cam.read()
-                if not ok:
-                    continue
-                frames_ok += 1
-                h, w = f.shape[:2]
-                if w > IMG_SIZE:
-                    f = cv2.resize(f, (IMG_SIZE, int(h * IMG_SIZE / w)))
-                gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
-                liveness_score = liveness.check_temporal_consistency(gray)
-                if liveness_score < 0.5:
-                    liveness_rejected += 1
-                    continue
-                emb, face = engine.embed(f)
-                if face is not None:
-                    faces_seen += 1
-                if emb is None:
-                    continue
-                real = spoof.real_score(f, face_bbox=face)
-                if real < spoof.threshold:
-                    spoofs_rejected += 1
-                    continue
-                cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
-                if cands:
-                    scores.append(max(cosine_score(emb, c) for c in cands))
+            spoof_scores = []   # every real_score computed this scan (2dp)
+            retry = 0
+            rounds = [FRAMES]   # a 2nd round is queued only by the anti-spoof retry
+            while rounds:
+                n = rounds.pop(0)
+                for fi in range(n):
+                    # Spread sampling: 0.3s gap before every frame except the
+                    # first of the round, so the round spans ~0.6-0.9s even
+                    # when earlier frames were rejected (continue paths).
+                    if fi:
+                        time.sleep(Cam.SPREAD_S)
+                    ok, f = cam.read()
+                    if not ok:
+                        continue
+                    frames_ok += 1
+                    h, w = f.shape[:2]
+                    # Liveness stays on the small frame (its 0.3-8.0 motion
+                    # window was tuned there); detection + anti-spoof need the
+                    # FULL frame -- shrinking to 320px made far-away face
+                    # crops blurry and the spoof model rejected them
+                    # (real_score 0.03-0.13 at 320w vs 0.39-0.78 at 1280w).
+                    if w > IMG_SIZE:
+                        f_small = cv2.resize(f, (IMG_SIZE, int(h * IMG_SIZE / w)))
+                    else:
+                        f_small = f
+                    gray = cv2.cvtColor(f_small, cv2.COLOR_BGR2GRAY)
+                    liveness_score = liveness.check_temporal_consistency(gray)
+                    if liveness_score < 0.5:
+                        liveness_rejected += 1
+                        continue
+                    emb, face = engine.embed(f)
+                    if face is not None:
+                        faces_seen += 1
+                    if emb is None:
+                        continue
+                    real = spoof.real_score(f, face_bbox=face)
+                    spoof_scores.append(round(real, 2))
+                    if real < spoof.threshold:
+                        spoofs_rejected += 1
+                        continue
+                    cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
+                    if cands:
+                        scores.append(max(cosine_score(emb, c) for c in cands))
+                # Round done: retry ONCE if the anti-spoof gate is what failed
+                # the round and the CP's 30s budget still has room.
+                good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
+                if (not retry and should_retry_scan(good, frames_ok, spoofs_rejected)
+                        and time.time() - t0 <= 20):
+                    log(f"{time.strftime('%H:%M:%S')} spoof retry: rejected={spoofs_rejected} scores={len(scores)}")
+                    retry = 1
+                    time.sleep(1.5)
+                    # The 1.5s gap corrupts the motion buffer (the pair
+                    # spanning the wait looks like huge motion): judge the
+                    # retry round on its own temporal consistency instead.
+                    liveness.reset()
+                    rounds.append(3)   # up to 3 more frames, same pipeline
             t_scan = time.time() - t1
 
             good = bool(scores) and sum(1 for s in scores if s >= THRESHOLD) >= HIT_REQ
             best = max(scores) if scores else 0.0
             total = time.time() - t0
-            log(f"{time.strftime('%H:%M:%S')} user=(redacted) total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof_rejected={spoofs_rejected} liveness_rejected={liveness_rejected} scores={[round(s,2) for s in scores]} best={round(best,2)} -> {'OK' if good else 'FAIL'}")
+            retry_part = f" retry={retry}" if retry else ""
+            log(f"{time.strftime('%H:%M:%S')} user=(redacted) total={total:.1f}s scan={t_scan:.1f}s frames={frames_ok} faces={faces_seen} spoof_rejected={spoofs_rejected} liveness_rejected={liveness_rejected} scores={[round(s, 2) for s in scores]} best={round(best, 2)} spoof_scores={[round(s, 2) for s in spoof_scores]} open={cam.open_s:.1f}s{retry_part} -> {'OK' if good else 'FAIL'}")
             win32file.WriteFile(pipe, ("OK" if good else "FAIL").encode())
         except Exception as scan_err:
             log(f"{time.strftime('%H:%M:%S')} scan error: {scan_err}")
