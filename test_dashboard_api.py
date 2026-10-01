@@ -1310,7 +1310,128 @@ log_result("unit/update_notifier state", "UNIT", "-",
            "; ".join(_bad)[:250] if _bad else
            "round-trip, missing->defaults, corrupt->defaults against a temp "
            "STATE_FILE; .tmp cleaned up, STATE_FILE restored, real "
-           ".update_notify.json unchanged")
+            ".update_notify.json unchanged")
+
+# ====================================================================
+#  44-46. UNIT TESTS - camera settle/warmup (face_unlock/camera_warmup.py)
+#  Read-only: the module is imported IN-PROCESS from its file path with
+#  importlib (retrying while a concurrent writer finishes the file) and
+#  must be side-effect free on import - no camera, no cv2, no files
+#  created - asserted with a face_unlock/ file-list snapshot taken right
+#  around the import (__pycache__ excluded: a CPython .pyc cache is an
+#  interpreter artifact, not a module side effect). settle() only ever
+#  runs against a fake read_fn and a fake clock advanced 0.1s per read,
+#  so these rows are instant and never touch a camera, the daemon or
+#  any real state.
+# ====================================================================
+print("\n[44] unit: camera warmup (face_unlock/camera_warmup.py)")
+
+import importlib.util   # stdlib (row [41] imports it too) - repeated so
+                         # rows [44]-[46] never depend on that block
+
+_CW_PATH = r"C:\NeoFace\face_unlock\camera_warmup.py"
+_CW_DIR = os.path.dirname(_CW_PATH)
+_CW_CONSTANTS = (("STABLE_DELTA", 3.0), ("STABLE_FRAMES", 3),
+                 ("MIN_SETTLE_S", 1.0), ("MAX_SETTLE_S", 2.5), ("BLACK_MEAN", 5.0))
+_CW_FUNCTIONS = ("frame_mean", "is_stable", "settle", "should_retry_scan")
+_CW_KEYS = ("stable", "frames", "elapsed", "last_mean", "black")
+
+
+def _cw_files(root):
+    """Relative file paths under root - proves the import created nothing."""
+    _names = set()
+    for _dp, _dn, _fn in os.walk(root):
+        _dn[:] = [_d for _d in _dn if _d != "__pycache__"]
+        for _f in _fn:
+            _names.add(os.path.relpath(os.path.join(_dp, _f), root))
+    return _names
+
+
+# Guarded import: the file may be missing or mid-write by a concurrent
+# agent, so missing/partial files are retried (60s apart, up to 3
+# retries). Any import failure only FAILS rows [44]-[46] - it is never
+# allowed to crash the suite.
+_cw = None
+_cw_import_err = None
+_cw_files_before = None
+_cw_files_after = None
+for _attempt in (1, 2, 3, 4):   # 1 initial try + up to 3 retries
+    try:
+        _spec = importlib.util.spec_from_file_location("camera_warmup", _CW_PATH)
+        if _spec is None or _spec.loader is None:
+            raise ImportError("spec_from_file_location returned %r" % (_spec,))
+        _mod = importlib.util.module_from_spec(_spec)
+        _cw_files_before = _cw_files(_CW_DIR)   # snapshot right before exec
+        _spec.loader.exec_module(_mod)          # must not open a camera
+        _cw_files_after = _cw_files(_CW_DIR)
+        _cw = _mod
+        _cw_import_err = None
+        break
+    except (OSError, SyntaxError, UnicodeError) as _we:
+        # File missing or partially written: wait, then retry.
+        _cw = None
+        _cw_import_err = "%s: %s" % (type(_we).__name__, str(_we)[:160])
+        if _attempt < 4:
+            print("      camera_warmup.py not importable yet (%s) - "
+                  "waiting 60s, retry %d of 3" % (type(_we).__name__, _attempt))
+            time.sleep(60)
+    except Exception as _ue:
+        # The module itself blew up on import - retrying will not help.
+        _cw = None
+        _cw_import_err = "%s: %s" % (type(_ue).__name__, str(_ue)[:160])
+        break
+
+# ── 44. import safety + frozen contract ─────────────────────────────
+print("  [44] import safety + frozen contract")
+_bad = []
+if _cw is None:
+    _bad.append("cannot import %s: %s" % (_CW_PATH, str(_cw_import_err)[:180]))
+else:
+    for _name, _want in _CW_CONSTANTS:
+        _got = getattr(_cw, _name, None)
+        if _got is None:
+            _bad.append("missing constant %s" % _name)
+        elif _got != _want:
+            _bad.append("%s=%r, want %r" % (_name, _got, _want))
+    for _name in _CW_FUNCTIONS:
+        if not callable(getattr(_cw, _name, None)):
+            _bad.append("%s missing or not callable" % _name)
+    if "cv2" in vars(_cw):
+        _bad.append("cv2 imported at module level (contract: no cv2 dependency)")
+
+    class _MeanFrame(object):
+        """Duck-typed frame: the contract only requires .mean()."""
+        def __init__(self, m):
+            self._m = m
+
+        def mean(self):
+            return self._m
+
+    if callable(getattr(_cw, "frame_mean", None)):
+        for _label, _arg, _want in ((".mean() -> 111.0", _MeanFrame(111.0), 111.0),
+                                    ("None", None, 0.0),
+                                    ("object() (no .mean)", object(), 0.0)):
+            try:
+                _got = _cw.frame_mean(_arg)
+            except Exception as _e:
+                _bad.append("frame_mean(%s) raised %s: %s"
+                            % (_label, type(_e).__name__, _e))
+                continue
+            if isinstance(_got, bool) or not isinstance(_got, (int, float)):
+                _bad.append("frame_mean(%s) -> %r (not a number)" % (_label, _got))
+            elif float(_got) != _want:
+                _bad.append("frame_mean(%s) -> %r, want %r" % (_label, _got, _want))
+    if _cw_files_before is not None and _cw_files_after != _cw_files_before:
+        _added = sorted(_cw_files_after - _cw_files_before)
+        _removed = sorted(_cw_files_before - _cw_files_after)
+        _bad.append("import created/removed files: +%s -%s"
+                    % (",".join(_added)[:80], ",".join(_removed)[:80]))
+log_result("unit/camera_warmup contract", "UNIT", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "import side-effect free (face_unlock/ file list unchanged, no cv2); "
+           "5 constants 3.0/3/1.0/2.5/5.0 + 4 callables; frame_mean duck-typed: "
+           ".mean()->111.0, None->0.0, object()->0.0")
 
 # ====================================================================
 #  SUMMARY TABLE
