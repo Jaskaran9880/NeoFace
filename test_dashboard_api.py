@@ -1433,6 +1433,66 @@ log_result("unit/camera_warmup contract", "UNIT", "-",
            "5 constants 3.0/3/1.0/2.5/5.0 + 4 callables; frame_mean duck-typed: "
            ".mean()->111.0, None->0.0, object()->0.0")
 
+# ── 45. decision matrix: is_stable + should_retry_scan ──────────────
+print("\n[45] unit: camera warmup decision matrix")
+print("  [45] is_stable (9 cases) + should_retry_scan (5 cases)")
+_bad = []
+if _cw is None:
+    _bad.append("skipped - camera_warmup import failed: %s"
+                % str(_cw_import_err)[:150])
+else:
+    _stable_cases = [
+        # (label, prev_mean, mean, want)
+        ("within delta (100->102)", 100.0, 102.0, True),
+        ("boundary abs==delta (100->103)", 100.0, 103.0, True),
+        ("delta exceeded (100->104)", 100.0, 104.0, False),
+        ("black current 4.9", 100.0, 4.9, False),
+        ("black prev 4.0", 4.0, 100.0, False),
+        ("both black", 4.0, 4.9, False),
+        ("prev None", None, 100.0, False),
+        ("current None", 100.0, None, False),
+        ("both None", None, None, False),
+    ]
+    for _label, _prev, _mean, _want in _stable_cases:
+        try:
+            _got = _cw.is_stable(_prev, _mean)
+        except Exception as _e:
+            _bad.append("is_stable(%s) raised %s: %s"
+                        % (_label, type(_e).__name__, _e))
+            continue
+        if not isinstance(_got, bool):
+            _bad.append("is_stable(%s) -> %r (not a bool)" % (_label, _got))
+        elif _got is not _want:
+            _bad.append("is_stable(%s) -> %r, want %r" % (_label, _got, _want))
+
+    _retry_cases = [
+        # (label, (good, frames_ok, spoofs_rejected), want)
+        ("not good, 3 frames, 3 spoofs", (False, 3, 3), True),
+        ("not good, 1 frame, 1 spoof", (False, 1, 1), True),
+        ("good scan", (True, 3, 3), False),
+        ("0 frames ok", (False, 0, 3), False),
+        ("0 spoofs rejected (liveness-only fail)", (False, 3, 0), False),
+    ]
+    for _label, _args, _want in _retry_cases:
+        try:
+            _got = _cw.should_retry_scan(*_args)
+        except Exception as _e:
+            _bad.append("should_retry_scan(%s) raised %s: %s"
+                        % (_label, type(_e).__name__, _e))
+            continue
+        if not isinstance(_got, bool):
+            _bad.append("should_retry_scan(%s) -> %r (not a bool)"
+                        % (_label, _got))
+        elif _got is not _want:
+            _bad.append("should_retry_scan(%s) -> %r, want %r"
+                        % (_label, _got, _want))
+log_result("unit/camera_warmup decision matrix", "UNIT", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "is_stable 9 cases (delta 2/3/4, black prev/current/both, 3 None); "
+           "should_retry_scan 5 cases (good, 0 frames, 0 spoofs - liveness-only "
+           "failure must NOT retry); all real bools")
+
 # ====================================================================
 #  SUMMARY TABLE
 # ====================================================================
