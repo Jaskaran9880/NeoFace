@@ -170,14 +170,26 @@ class Cam:
                 return True, self.latest.copy()
         return False, None
 
-    def close(self):
+    def _stop_thread(self):
+        """Stop the grab thread and WAIT for it before any cap.release().
+
+        Releasing the cap while _grab is inside cap.read() (a ~1s window on a
+        contended/slow camera) leaks the capture device: the process keeps the
+        camera and every other opener gets black frames until this process
+        exits.  Ordering is join -> release so _grab can never be mid-read
+        during release.
+        """
         self.running = False
+        t = self._thread
+        if t is not None:
+            t.join(timeout=2)
+            self._thread = None
+
+    def close(self):
+        self._stop_thread()
         if self.cap:
             self.cap.release()
             self.cap = None
-        if self._thread:
-            self._thread.join(timeout=2)
-            self._thread = None
         self.latest = None
 
 cam = Cam()
