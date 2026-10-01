@@ -2,6 +2,7 @@
 
 ## 0.4.5 - 2026-09-26
 - Fixed face unlock failing in the first ~1-3 minutes after wake from sleep/hibernate (anti-spoof rejected every cold frame): camera settle warmup before the grab thread starts (`face_unlock/camera_warmup.py`), frame sampling spread over ~0.6-0.9s, a single budget-guarded anti-spoof retry, and per-frame score logging (`spoof_scores=[...] open=...s retry=1`) in daemon.log
+- Fixed face unlock failing at distance: the lock-screen daemon now runs face detection and anti-spoof on the full camera frame instead of a 320px-wide copy — far-away face crops were too blurry and the spoof model rejected them (real_score 0.03-0.13 shrunk vs 0.8+ at full resolution); liveness still runs on the small frame so its tuned motion window is unchanged
 - Full uninstaller: new double-clickable `uninstall.bat` (auto-elevates) + enhanced `install/uninstall.ps1` — stops dashboard (:8080) and daemon first, removes all NeoFace scheduled tasks, unregisters the lock-screen DLL before deleting files, removes `C:\Program Files\NeoFace` and NeoFace shortcuts
 - User data (`C:\ProgramData\NeoFace`: face gallery, password vault, logs) kept by default for reinstall; `-Purge` switch or `y`/`purge` at the prompt deletes it — the `C:\NeoFace` repo is never touched
 - Handles a DLL locked by the lock screen (LogonUI) by scheduling deletion on reboot; prints a removed/kept/failed summary with exit codes
