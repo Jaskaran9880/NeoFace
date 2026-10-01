@@ -281,12 +281,14 @@ def _get_camera_index():
     try:
         import cv2
         cam = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        import time
-        time.sleep(0.5)
-        cam.grab()
-        ok, frame = cam.read()
-        cam.release()
+        try:
+            cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            import time
+            time.sleep(0.5)
+            cam.grab()
+            ok, frame = cam.read()
+        finally:
+            cam.release()
         if ok and frame.mean() > 5:
             _camera_index_cache = idx
             return idx
@@ -296,12 +298,14 @@ def _get_camera_index():
         try:
             import cv2
             cam = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            import time
-            time.sleep(0.5)
-            cam.grab()
-            ok, frame = cam.read()
-            cam.release()
+            try:
+                cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                import time
+                time.sleep(0.5)
+                cam.grab()
+                ok, frame = cam.read()
+            finally:
+                cam.release()
             if ok and frame.mean() > 5:
                 _camera_index_cache = i
                 return i
@@ -361,9 +365,11 @@ def get_status():
         try:
             import cv2
             cap = cv2.VideoCapture(_get_camera_index(), cv2.CAP_DSHOW)
-            if cap.isOpened():
-                status["camera"]["available"] = True
-                status["camera"]["name"] = cap.getBackendName()
+            try:
+                if cap.isOpened():
+                    status["camera"]["available"] = True
+                    status["camera"]["name"] = cap.getBackendName()
+            finally:
                 cap.release()
         except Exception:
             pass
@@ -1289,41 +1295,45 @@ def api_test_scan():
         gallery.load()
 
         cam = cv2.VideoCapture(_get_camera_index(), cv2.CAP_DSHOW)
-        cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        try:
+            cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        if not cam.isOpened():
-            return jsonify({"error": "Camera not available"}), 500
+            if not cam.isOpened():
+                return jsonify({"error": "Camera not available"}), 500
 
-        time.sleep(1.5)
-        for _ in range(5):
-            cam.read()
-        time.sleep(0.05)
+            time.sleep(1.5)
+            for _ in range(5):
+                cam.read()
+            time.sleep(0.05)
 
-        frames = 0
-        faces = 0
-        scores = []
-        for _ in range(3):
-            ok, f = cam.read()
-            if not ok:
-                continue
-            frames += 1
-            h, w = f.shape[:2]
-            if w > 640:
-                f = cv2.resize(f, (640, int(h * 640 / w)))
-            emb, face = engine.embed(f)
-            if face is not None:
-                faces += 1
-            if emb is None:
-                continue
-            user = os.getlogin()
-            cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
-            if cands:
-                scores.append(round(max(cosine_score(emb, c) for c in cands), 3))
-
-        cam.release()
+            frames = 0
+            faces = 0
+            scores = []
+            for _ in range(3):
+                ok, f = cam.read()
+                if not ok:
+                    continue
+                frames += 1
+                h, w = f.shape[:2]
+                if w > 640:
+                    f = cv2.resize(f, (640, int(h * 640 / w)))
+                emb, face = engine.embed(f)
+                if face is not None:
+                    faces += 1
+                if emb is None:
+                    continue
+                user = os.getlogin()
+                cands = [c for c in gallery.templates.get(user, []) if len(c) == len(emb)]
+                if cands:
+                    scores.append(round(max(cosine_score(emb, c) for c in cands), 3))
+        finally:
+            try:
+                cam.release()
+            except Exception:
+                pass
 
         best = max(scores) if scores else 0
         # Read threshold exactly like the daemon does (flat, last-wins).
