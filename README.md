@@ -5,7 +5,8 @@ Open-source face unlock for Windows 10/11 laptops with a regular RGB webcam (no 
 
 Built for my Predator Helios Neo 16 (i7-13700HX, RTX 4050, Win 11). Uses a normal 1080p webcam + AI face recognition to unlock via the Windows lock screen tile.
 
-<video src="https://github.com/user-attachments/assets/b54a2506-0e08-4a72-83cc-a583077f814d" controls="controls" muted="muted"></video>
+<video src="https://github.com/user-attachments/assets/b54a2506-0e08-4a72-83cc-a583077f814d" controls="controls" muted="muted" autoplay="autoplay"></video>
+
 
 ## How it works
 
