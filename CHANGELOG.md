@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 - 2026-10-21
+- One-click installer: `NeoFace-Setup.exe` (~67 MB, GitHub Releases) — no Python, Git, or compiler needed on the target PC; app installs to LocalAppData with a bundled Python 3.13 runtime, CP DLL to Program Files
+- First-run console wizard (`tools/setup_wizard.py`): Windows password vault (DPAPI), live-camera face enrollment (photos folder still supported), and a test scan — re-runnable anytime from Start Menu → NeoFace → Setup Wizard
+- Model downloads moved fully to the cloud at install: SHA256-pinned (YuNet/SFace/antifas) with curl + Invoke-WebRequest retries via `installer/post_install.ps1`
+- Start Menu entries: Dashboard, Setup Wizard, Test Unlock, Uninstall
+- GitHub Actions: `ci.yml` builds the C++ DLL + compiles the installer on every push/PR; `release.yml` publishes `NeoFace-Setup-<version>.exe` to a Release (with SHA256 in the notes) on `v*` tags
+- New `requirements-runtime.txt` (6 packages): opencv already ships the face/dnn ONNX paths, so onnxruntime and insightface stay optional accurate-engine extras
+- Repo cleanup: tests/ and tools/dev/ and docs/dev/ folders, `install/` merged into `installer/`, `config.toml` no longer tracked (example stays), front page cut from 26 to ~20 items
+- Installer uninstall (Settings → Apps) removes tile, tasks, and files; keeps `C:\ProgramData\NeoFace` (faces/vault) for reinstall
+
 ## 0.4.5 - 2026-09-26
 - Fixed face unlock failing in the first ~1-3 minutes after wake from sleep/hibernate (anti-spoof rejected every cold frame): camera settle warmup before the grab thread starts (`face_unlock/camera_warmup.py`), frame sampling spread over ~0.6-0.9s, a single budget-guarded anti-spoof retry, and per-frame score logging (`spoof_scores=[...] open=...s retry=1`) in daemon.log
 - Fixed face unlock failing at distance: the lock-screen daemon now runs face detection and anti-spoof on the full camera frame instead of a 320px-wide copy — far-away face crops were too blurry and the spoof model rejected them (real_score 0.03-0.13 shrunk vs 0.8+ at full resolution); liveness still runs on the small frame so its tuned motion window is unchanged

@@ -21,12 +21,23 @@ Win+L lock screen
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.10+
+- Windows 10/11 **x64**
 - Any RGB webcam (USB or built-in)
-- VS2022 Build Tools (for building the C++ DLL)
 
-## Quick install
+That's it for the installer — no Python, no Git, no compiler.
+
+## Install (one click)
+
+1. Download **`NeoFace-Setup.exe`** from [Releases](https://github.com/Jaskaran9880/NeoFace/releases/latest) (about 70 MB)
+2. Run it — if SmartScreen warns, click **More info → Run anyway** (the installer is unsigned)
+3. The setup wizard then asks for your **Windows password once** (stored with DPAPI, locally) and walks you through **face enrollment** with the camera
+4. Sign in with PIN, press **Win+L**, click the **NeoFace** tile, look at the camera
+
+Start Menu after install: **NeoFace → Dashboard** (status/troubleshoot), **Setup Wizard** (re-enroll), **Test Unlock**.
+
+## Install from source (developers)
+
+Needs [Python 3.10+](https://python.org), Git, and [VS2022 Build Tools](https://visualstudio.microsoft.com/downloads) (Desktop C++ workload) for the C++ DLL:
 
 ```powershell
 # 1. Clone
@@ -37,7 +48,7 @@ cd NeoFace
 .\installer\install.ps1
 ```
 
-## Manual install
+### Manual install
 
 ```powershell
 # 1. Clone and install dependencies
@@ -72,7 +83,9 @@ python tools\test_unlock.py
 
 ## Uninstall
 
-Run either of these **as Admin** (both raise a UAC prompt if needed):
+**Installer installs**: Start Menu → NeoFace → Uninstall (or Windows Settings → Apps). Keeps `C:\ProgramData\NeoFace` (faces/vault) so a reinstall works.
+
+**Clone installs**: run either of these **as Admin** (both raise a UAC prompt if needed):
 
 ```bat
 uninstall.bat                        (double-click, repo root)
@@ -129,7 +142,8 @@ C:\NeoFace\
   dashboard.py          - Flask dashboard (status, photos, troubleshoot)
   templates/index.html  - Dashboard UI (Tailwind dark glass)
   static/logo.png       - Dashboard header logo
-  install/install.ps1   - One-click installer
+  installer/            - Inno Setup script, post-install, build_dist, wizard launchers
+  tools/setup_wizard.py - First-run wizard (vault + enrollment + test scan)
   cp/icon.bmp, cp/tile.bmp - Lock screen logo assets (deployed to Program Files)
   photos/               - Your face photos (for enrollment)
   models/
@@ -179,6 +193,8 @@ The `NeoFace-UpdateCheck` scheduled task runs the same check automatically ~1 mi
 
 | Problem | Fix |
 |---------|-----|
+| SmartScreen says "protected your PC" | More info → **Run anyway** (the installer is unsigned) |
+| Want to re-enroll or re-run setup | Start Menu → NeoFace → **Setup Wizard** |
 | Update check unavailable | Git not installed or installed from a zip — clone the repo to enable update checks |
 | Update prompt doesn't appear | Needs Internet within 5 min of logon; a declined version never re-prompts — check `update_notifier.log` |
 | "Camera not available" | Stop the daemon first (`Stop-ScheduledTask -TaskName NeoFace-Daemon`), then try again |
