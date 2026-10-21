@@ -15,7 +15,10 @@ jobs:
       - name: Build credential provider DLL
         shell: pwsh
         run: |
-          .\cp\build_cp.ps1
+          # build_cp.ps1 uses relative source paths - must run from cp\
+          Push-Location cp
+          .\build_cp.ps1
+          Pop-Location
           if (!(Test-Path cp\FaceUnlockCP.dll)) { throw "build_cp.ps1 did not produce cp\FaceUnlockCP.dll" }
 
       - uses: actions/upload-artifact@v4
