@@ -8,6 +8,7 @@ models/*
 !models/antifas_v2.onnx
 models/models/
 dist/
+Output/
 build/
 *.log
 *.onnx
