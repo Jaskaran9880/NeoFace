@@ -1,0 +1,13 @@
+# Minimal runtime for the installed NeoFace daemon + dashboard.
+#
+# All face models run through OpenCV (cv2.FaceDetectorYN,
+# cv2.FaceRecognizerSF, cv2.dnn.readNetFromONNX), so onnxruntime and
+# insightface are NOT needed here. They are only required for the optional
+# accurate engine ([engine] backend = "accurate") - see requirements.txt.
+
+opencv-python>=4.9
+numpy>=1.26
+flask>=3.0
+pillow>=10.1
+pillow-heif>=1.7
+pywin32>=306
