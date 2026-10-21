@@ -39,15 +39,6 @@ Start Menu after install: **NeoFace → Dashboard** (status/troubleshoot), **Set
 
 Needs [Python 3.10+](https://python.org), Git, and [VS2022 Build Tools](https://visualstudio.microsoft.com/downloads) (Desktop C++ workload) for the C++ DLL:
 
-```powershell
-# 1. Clone
-git clone https://github.com/Jaskaran9880/NeoFace.git
-cd NeoFace
-
-# 2. Install (run as Admin for full setup)
-.\installer\install.ps1
-```
-
 ### Manual install
 
 ```powershell
