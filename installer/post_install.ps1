@@ -7,6 +7,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Diagnosable: full transcript even when launched by a silent installer
+$transcript = Join-Path $env:TEMP "neoface-postinstall.log"
+try { Start-Transcript -Path $transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+Write-Host "post_install start $(Get-Date -Format o) appdir=$AppDir pid=$PID"
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (!$isAdmin) { throw "post_install.ps1 must run as Administrator." }
@@ -62,8 +66,9 @@ foreach ($m in $models) {
                 Write-Host ("  {0} downloading (try {1}/3)..." -f $m.Name, $try)
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 # curl first (more reliable), Invoke-WebRequest as fallback
-                & curl.exe -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 -o $tmp $m.Url 2>$null
+                & curl.exe -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 -o $tmp $m.Url
                 if ($LASTEXITCODE -ne 0 -or !(Test-Path $tmp) -or (Get-Item $tmp).Length -eq 0) {
+                    Write-Host ("  curl failed (exit $LASTEXITCODE) - trying Invoke-WebRequest")
                     Invoke-WebRequest -Uri $m.Url -OutFile $tmp -UseBasicParsing -TimeoutSec 300
                 }
                 if ((Get-FileSha256 $tmp) -eq $m.Sha256) {

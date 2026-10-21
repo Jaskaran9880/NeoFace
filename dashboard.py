@@ -403,7 +403,7 @@ def get_status():
 # are ever executed - never pull, checkout, reset, clean, submodule or any
 # config change. Every call is a list-arg subprocess (shell=False) with a hard
 # timeout, UTF-8/errors=replace output and no console window.
-FALLBACK_VERSION = "0.4.3"
+FALLBACK_VERSION = "0.5.0"
 UPDATE_CACHE_FILE = os.path.join(ROOT, ".update_cache.json")
 UPDATE_CACHE_TTL = 300                 # soft TTL for the automatic page-load check
 UPDATE_FAILURE_TTL = 60                # back off after a failed network attempt
