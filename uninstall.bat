@@ -19,9 +19,9 @@ if errorlevel 1 (
 echo Running NeoFace uninstaller...
 echo.
 if defined NFPURGE (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\uninstall.ps1" -Purge
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\uninstall.ps1" -Purge
 ) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install\uninstall.ps1"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\uninstall.ps1"
 )
 if errorlevel 1 (
     echo.

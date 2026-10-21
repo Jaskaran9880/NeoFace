@@ -1,6 +1,6 @@
 """Distance/detection sweep for the NeoFace YuNet detector + SFace matcher.
 
-Usage: python tools\\diag_distance.py [camera_index] [frames_per_variant]
+Usage: python tools\\dev\\diag_distance.py [camera_index] [frames_per_variant]
 
 For each camera resolution the daemon could use (640x480, 1280x720) this
 captures live frames and reports, for the daemon's CURRENT pipeline (frame

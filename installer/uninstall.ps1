@@ -99,7 +99,7 @@ if (!(Test-IsAdmin)) {
     }
     if ($elevProc) { $elevProc.WaitForExit(); exit $elevProc.ExitCode }
     Write-Host "Elevation failed or was cancelled: $elevErr" -ForegroundColor Red
-    Write-Host "Open an Admin terminal and run:  .\install\uninstall.ps1" -ForegroundColor Yellow
+    Write-Host "Open an Admin terminal and run:  .\installer\uninstall.ps1" -ForegroundColor Yellow
     exit 1
 }
 

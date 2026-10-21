@@ -7,7 +7,7 @@ Verifies:
   - GetSubmitButtonValue targets an existing field
   - GetBitmapValue is implemented (not stubbed)
 
-Run from the repo root:  python tools\\check_cp_fields.py
+ Run from the repo root:  python tools\\dev\\check_cp_fields.py
 """
 import re
 import sys

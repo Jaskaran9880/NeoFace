@@ -14,13 +14,14 @@ python tools\fetch_fast.py
 ```
 face_unlock/       - Core Python modules (engine, camera, gallery, daemon)
 cp/                - C++ Credential Provider DLL (lock screen tile)
-tools/             - Enrollment, testing, deployment, sanity-check scripts
-installer/         - Scheduled task installer/uninstaller
-install/           - One-click install/uninstall for end users
+tools/             - Enrollment, testing, deployment scripts
+tools/dev/         - Diagnostics and sanity-check scripts
+installer/         - Install/uninstall scripts and setup wizard
+tests/             - Test scripts (dashboard API, camera)
 dashboard.py       - Flask dashboard (status, photos, troubleshoot)
 templates/         - Dashboard HTML (Tailwind dark UI)
 static/            - Dashboard static assets (logo.png)
-docs/              - Architecture and security documentation
+docs/              - Architecture and security documentation (docs/dev/ = analysis notes)
 photos/            - Face photos for enrollment (gitignored)
 models/            - AI models (gitignored, downloaded by fetch_fast.py)
 ```
@@ -37,10 +38,10 @@ models/            - AI models (gitignored, downloaded by fetch_fast.py)
 ```powershell
 python tools\test_unlock.py          # Test face scan
 python tools\probe_system.py         # Test pipe connection
-python tools\check_python_syntax.py  # AST-parse all tracked .py
-powershell -File tools\check_ps1_syntax.ps1  # Parse all tracked .ps1
-python tools\check_cp_fields.py      # CP field schema consistency
-python tools\check_repo_hygiene.py   # Secrets/artifacts must stay untracked
+python tools\dev\check_python_syntax.py  # AST-parse all tracked .py
+powershell -File tools\dev\check_ps1_syntax.ps1  # Parse all tracked .ps1
+python tools\dev\check_cp_fields.py      # CP field schema consistency
+python tools\dev\check_repo_hygiene.py   # Secrets/artifacts must stay untracked
 ```
 
 ## Building the DLL

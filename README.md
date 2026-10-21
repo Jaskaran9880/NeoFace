@@ -34,7 +34,7 @@ git clone https://github.com/Jaskaran9880/NeoFace.git
 cd NeoFace
 
 # 2. Install (run as Admin for full setup)
-.\install\install.ps1
+.\installer\install.ps1
 ```
 
 ## Manual install
@@ -78,8 +78,8 @@ Run either of these **as Admin** (both raise a UAC prompt if needed):
 uninstall.bat                        (double-click, repo root)
 ```
 ```powershell
-.\install\uninstall.ps1              (Admin terminal)
-.\install\uninstall.ps1 -Purge       (Admin terminal, also wipes user data)
+.\installer\uninstall.ps1              (Admin terminal)
+.\installer\uninstall.ps1 -Purge       (Admin terminal, also wipes user data)
 ```
 
 What it removes:

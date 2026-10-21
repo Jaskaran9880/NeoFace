@@ -1,5 +1,5 @@
 # Parse every tracked PowerShell script; exit 1 on any parse error.
-# Run from the repo root:  powershell -File tools\check_ps1_syntax.ps1
+# Run from the repo root:  powershell -File tools\dev\check_ps1_syntax.ps1
 $files = @(git ls-files "*.ps1")
 if ($files.Count -eq 0) {
     Write-Host "no PowerShell files tracked"

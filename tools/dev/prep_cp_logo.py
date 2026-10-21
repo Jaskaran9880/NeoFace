@@ -6,9 +6,9 @@ Produces (matching the shipped asset dimensions):
   static/logo.png   128x128 RGBA    dashboard header logo (with --dashboard)
 
 Usage:
-  python tools\\prep_cp_logo.py path\\to\\logo.png
-  python tools\\prep_cp_logo.py logo.png --dashboard
-  python tools\\prep_cp_logo.py logo.png --out-dir cp --bg 255,255,255
+python tools\\dev\\prep_cp_logo.py path\\to\\logo.png
+python tools\\dev\\prep_cp_logo.py logo.png --dashboard
+python tools\\dev\\prep_cp_logo.py logo.png --out-dir cp --bg 255,255,255
 """
 import argparse
 import os

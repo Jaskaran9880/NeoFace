@@ -6,7 +6,7 @@ Checks:
   - .dashboard_key, debug images, and logs are ignored by .gitignore
   - .dashboard_key never appears in git status output
 
-Run from the repo root:  python tools\\check_repo_hygiene.py
+Run from the repo root:  python tools\\dev\\check_repo_hygiene.py
 """
 import re
 import subprocess

@@ -53,7 +53,8 @@ import time
 from datetime import datetime
 
 BASE_URL = "http://127.0.0.1:8080"
-_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_key")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_KEY_FILE = os.path.join(_REPO_ROOT, ".dashboard_key")
 if not os.path.exists(_KEY_FILE):
     print("ERROR: .dashboard_key not found - start the dashboard once so it can create one")
     sys.exit(1)
@@ -257,7 +258,7 @@ if destructive(5, "/api/settings", "POST"):
         "camera_width": 640,
         "camera_height": 480
     }
-    _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+    _cfg_path = os.path.join(_REPO_ROOT, "config.toml")
     _cfg_backup = None
     _antispoof_before = None
     if os.path.exists(_cfg_path):
@@ -687,8 +688,7 @@ else:
 
 # ── 32. XSS guard (static, no server needed) ──────────────────────
 print("\n[32] XSS guard (static): subject/commit rendering goes through escapeHtml")
-_template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "templates", "index.html")
+_template_path = os.path.join(_REPO_ROOT, "templates", "index.html")
 if not os.path.exists(_template_path):
     log_result("templates/index.html", "STATIC", "-", "FAIL",
                "index.html not found - cannot verify XSS guard")
@@ -739,6 +739,8 @@ else:
 _dash = None
 _dash_import_err = None
 try:
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
     import dashboard as _dash
 except Exception as _unit_err:
     _dash_import_err = "%s: %s" % (type(_unit_err).__name__, _unit_err)
@@ -1104,9 +1106,8 @@ print("\n[41] unit: update notifier (tools/update_notifier.py)")
 import importlib.util   # stdlib, local import - keeps the module header untouched
 import tempfile          # stdlib - temp STATE_FILE for row [41c] only
 
-_UN_PATH = r"C:\NeoFace\tools\update_notifier.py"
-_UN_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              ".update_notify.json")
+_UN_PATH = os.path.join(_REPO_ROOT, "tools", "update_notifier.py")
+_UN_STATE_PATH = os.path.join(_REPO_ROOT, ".update_notify.json")
 _UN_CONSTANTS = ("REPO_ROOT", "STATE_FILE", "LOG_FILE", "NOTIFY_MIN_INTERVAL_S")
 _UN_FUNCTIONS = ("load_state", "save_state", "should_notify", "show_prompt",
                  "apply_update", "run_once", "main")
@@ -1330,7 +1331,7 @@ print("\n[44] unit: camera warmup (face_unlock/camera_warmup.py)")
 import importlib.util   # stdlib (row [41] imports it too) - repeated so
                          # rows [44]-[46] never depend on that block
 
-_CW_PATH = r"C:\NeoFace\face_unlock\camera_warmup.py"
+_CW_PATH = os.path.join(_REPO_ROOT, "face_unlock", "camera_warmup.py")
 _CW_DIR = os.path.dirname(_CW_PATH)
 _CW_CONSTANTS = (("STABLE_DELTA", 3.0), ("STABLE_FRAMES", 3),
                  ("MIN_SETTLE_S", 1.0), ("MAX_SETTLE_S", 2.5), ("BLACK_MEAN", 5.0))

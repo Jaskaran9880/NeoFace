@@ -1,6 +1,6 @@
 """Parse every tracked Python file with ast; exit 1 on any syntax error.
 
-Run from the repo root:  python tools\\check_python_syntax.py
+Run from the repo root:  python tools\\dev\\check_python_syntax.py
 """
 import ast
 import subprocess
