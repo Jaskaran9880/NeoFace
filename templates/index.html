@@ -1021,6 +1021,8 @@
     let updateState = { phase: 'idle' };   // idle | checking | up-to-date | behind | applying | unknown | unavailable | error
     let updateInFlight = false;
     let applyPollTimer = null;
+    let lastStatusAt = 0;
+    let whatsNewVersion = null;
 
     function setUpdateState(next) {
         updateState = next || { phase: 'idle' };
@@ -1075,9 +1077,11 @@
         setUpdateState({ phase: 'checking', status: updateState.status });
         try {
             const s = await api('/api/update/status' + (force ? '?force=1' : ''));
+            lastStatusAt = Date.now();
             const next = updateStateFrom(s);
             setUpdateState(next);
             maybePromptPreference(s);
+            maybeShowWhatsNewAfterRestart(s);
             if (next.phase === 'applying') startApplyPoll();
         } catch (e) {
             setUpdateState({ phase: 'error', message: e && e.message ? e.message : 'Update check failed.', status: updateState.status });
@@ -1129,6 +1133,13 @@
             if (ap.state === 'done' || ap.state === 'failed') {
                 clearInterval(applyPollTimer);
                 applyPollTimer = null;
+                if (ap.state === 'done') {
+                    // What-changed modal, immediately: the pre-apply commit
+                    // list (git installs) is the fallback when the version
+                    // has no release notes (dev-clone describe versions).
+                    const preApplyCommits = (updateState.status && updateState.status.commits) || [];
+                    showWhatsNew(ap.version, ap.version, preApplyCommits);
+                }
                 // Re-derive from the server with fresh version info.
                 checkUpdates(true);
             }
@@ -1187,6 +1198,81 @@
             + '<button class="glass-btn btn-primary btn-sm" onclick="setUpdateMode(\'auto\')">Update automatically</button>'
             + '<button class="glass-btn btn-ghost btn-sm" onclick="setUpdateMode(\'notify\')">Just tell me when one is available</button>'
             + '</div>');
+    }
+
+    // ---- "what changed" modal (shown once per applied version) ---------
+    async function fetchWhatsNew(tag) {
+        try {
+            const q = tag ? ('?tag=' + encodeURIComponent(tag)) : '';
+            const n = await api('/api/update/notes' + q);
+            if (n && !n.error && n.notes_html) return n;
+        } catch (e) { /* fail-soft */ }
+        return null;
+    }
+
+    async function confirmWhatsNewShown(version) {
+        try {
+            await api('/api/update/notes/shown', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ version: version })
+            });
+        } catch (e) { /* fail-soft: the session guard still prevents nagging */ }
+    }
+
+    function closeWhatsNew() {
+        hideUpdateModal();
+        if (whatsNewVersion) {
+            confirmWhatsNewShown(whatsNewVersion);
+            whatsNewVersion = null;
+        }
+    }
+
+    async function showWhatsNew(tag, version, fallbackCommits) {
+        const key = version || tag;
+        if (!key) return;
+        const notes = await fetchWhatsNew(tag);
+        let notesHtml = notes ? notes.notes_html : '';
+        if (!notesHtml && Array.isArray(fallbackCommits) && fallbackCommits.length) {
+            notesHtml = '<p>These commits were applied:</p><ul>' + fallbackCommits.slice(0, 20).map(function (c) {
+                return '<li><code>' + escapeHtml(c && c.sha) + '</code> &middot; ' + escapeHtml(c && c.subject) + '</li>';
+            }).join('') + '</ul>';
+        }
+        if (!notesHtml) {
+            // Nothing to display (e.g. a dev-clone describe version has no
+            // release) - record it once so we stop re-trying on every load.
+            confirmWhatsNewShown(key);
+            return;
+        }
+        whatsNewVersion = key;
+        const title = 'What changed in ' + String(key).replace(/^v/, '');
+        showUpdateModal(
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+            + '<h3 style="font-size:16px;font-weight:600;color:#f1f5f9;margin:0">' + escapeHtml(title) + '</h3>'
+            + '<button class="glass-btn btn-ghost btn-sm" onclick="closeWhatsNew()">Close</button>'
+            + '</div>'
+            + '<div class="notes-body">' + notesHtml + '</div>');
+        // Any dismissal (backdrop / Esc - both wired by showUpdateModal)
+        // records the shown-once marker via closeWhatsNew.
+        const wrap = document.getElementById('updateModal');
+        if (wrap) wrap.addEventListener('click', function (e) { if (e.target === wrap) closeWhatsNew(); });
+        document.addEventListener('keydown', function whatsNewEsc(e) {
+            if (e.key === 'Escape') {
+                closeWhatsNew();
+                document.removeEventListener('keydown', whatsNewEsc);
+            }
+        });
+    }
+
+    function maybeShowWhatsNewAfterRestart(s) {
+        // An update was applied while the dashboard was closed: show the
+        // notes once per version on the next page load.
+        try { if (sessionStorage.getItem('nfWhatsNewShown')) return; } catch (_) {}
+        const ap = s && s.apply;
+        if (!ap || ap.state !== 'done' || !ap.version) return;
+        if (s.prefs && s.prefs.last_shown_notes_version === ap.version) return;
+        try { sessionStorage.setItem('nfWhatsNewShown', '1'); } catch (_) {}
+        showWhatsNew(ap.version, ap.version, null);
     }
 
     function updateAgeText(seconds) {
@@ -1364,6 +1450,14 @@
 
     // One fire-and-forget check per page load; honours the server-side cache.
     try { checkUpdates(false); } catch (e) { console.error('Update check failed:', e); }
+
+    // Hourly re-check while the dashboard stays open, plus a re-check when
+    // the tab returns to the foreground after an hour - mirrors the hourly
+    // NeoFace-UpdateCheck scheduled task for the open-dashboard case.
+    setInterval(function () { if (!document.hidden) checkUpdates(false); }, 3600e3);
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden && Date.now() - lastStatusAt > 3600e3) checkUpdates(false);
+    });
     </script>
 </body>
 </html>
