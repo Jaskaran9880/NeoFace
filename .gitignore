@@ -38,3 +38,4 @@ debug_*.jpg
 Thumbs.db
 Desktop.ini
 logo_old.png
+.release_cache.json*
