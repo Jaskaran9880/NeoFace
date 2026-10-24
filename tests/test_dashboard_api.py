@@ -1726,6 +1726,173 @@ log_result("unit/camera_warmup settle", "UNIT", "-",
            "min_s, real ndarray -> stable; %s" % _cw_default_note)
 
 # ====================================================================
+#  47. UNIT TESTS - updater core (face_unlock/updater.py)
+#  Read-only: the module is imported IN-PROCESS from its file path and
+#  must be side-effect free on import (no network, no task IO, no state
+#  writes). No download/apply/elevation path is ever executed here -
+#  those are covered by the installer smoke flow, not this suite.
+# ====================================================================
+print("\n[47] unit: updater core (face_unlock/updater.py)")
+
+import shutil as _shutil_tmp   # stdlib, local import - keeps the module header untouched
+
+_up_import_err = None
+_up = None
+try:
+    _spec = importlib.util.spec_from_file_location(
+        "neoface_updater_under_test",
+        os.path.join(_REPO_ROOT, "face_unlock", "updater.py"))
+    if _spec is None or _spec.loader is None:
+        raise ImportError("spec_from_file_location returned None")
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)   # must not hit the network or write files
+    _up = _mod
+except Exception as _unit_err:
+    _up_import_err = "%s: %s" % (type(_unit_err).__name__, _unit_err)
+
+if _up is None:
+    log_result("unit/updater import", "UNIT", "-", "FAIL",
+               "cannot import face_unlock/updater.py: %s" % str(_up_import_err)[:180])
+else:
+    log_result("unit/updater import", "UNIT", "-", "PASS",
+               "import-pure: no network, no task/state IO at import time")
+
+    # -- parse_semver matrix ------------------------------------------------
+    _bad = []
+    try:
+        _semver_cases = (
+            ("v0.6.0", (0, 6, 0)),
+            ("0.6.0", (0, 6, 0)),
+            ("v0.5.0-12-gabc1234", (0, 5, 0)),   # git-describe -> nearest tag
+            ("v1.10.2", (1, 10, 2)),
+            ("v0.6.0+build5", (0, 6, 0)),
+            ("", None),
+            ("abc", None),
+            ("v1.2", None),                      # incomplete: not a semver
+            (None, None),
+        )
+        for _raw, _want in _semver_cases:
+            _got = _up.parse_semver(_raw)
+            if _got != _want:
+                _bad.append("parse_semver(%r) -> %r != %r" % (_raw, _got, _want))
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/parse_semver", "UNIT", "-", "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "9 cases: v-prefix, git-describe suffix, build suffix, junk -> None")
+
+    # -- is_newer matrix ----------------------------------------------------
+    _bad = []
+    try:
+        _newer_cases = (
+            ("v0.6.0", "v0.5.0", True),
+            ("v0.5.1", "v0.5.0", True),
+            ("v0.5.0", "v0.5.0", False),       # same version is never newer
+            ("v0.4.9", "v0.5.0", False),       # older never applies
+            ("v0.5.0-12-gabc1234", "v0.5.0", False),   # describe==tag -> not newer
+            ("v0.6.0", "", False),             # unknown local never blocks wrongly
+            ("", "v0.5.0", False),             # unparseable remote never applies
+            (None, "v0.5.0", False),
+        )
+        for _remote, _local, _want in _newer_cases:
+            _got = _up.is_newer(_remote, _local)
+            if _got is not _want:
+                _bad.append("is_newer(%r, %r) -> %r != %r" % (_remote, _local, _got, _want))
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/is_newer", "UNIT", "-", "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "8 cases: unknown side always yields False (never apply blindly)")
+
+    # -- parse_sha256_from_body against the real release.yml template -------
+    _bad = []
+    try:
+        _hash_hex = "84f6967d6bfe251513f75ba283722f06a7681dc57b88942c0dd414e01794ddd1"
+        _body_tpl = ("## NeoFace Unlock 0.5.0\n\n"
+                     "### Install (no Python, no Git, no compiler needed)\n"
+                     "1. Download `NeoFace-Setup-0.5.0.exe` below\n\n"
+                     "### SHA256\n"
+                     "````\n%s\n````\n" % _hash_hex)
+        _got = _up.parse_sha256_from_body(_body_tpl)
+        if _got != _hash_hex:
+            _bad.append("release.yml template -> %r != hash" % (_got,))
+        if _up.parse_sha256_from_body("no hash here") is not None:
+            _bad.append("hash-less body did not yield None")
+        _bare = _up.parse_sha256_from_body("installer hash is\n%s\nthanks" % _hash_hex)
+        if _bare != _hash_hex:
+            _bad.append("bare-hash fallback -> %r" % (_bare,))
+        _lower = _up.parse_sha256_from_body("### SHA256\n````\n%s\n````\n"
+                                            % _hash_hex.upper())
+        if _lower != _hash_hex:
+            _bad.append("uppercase hash not lowercased -> %r" % (_lower,))
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/parse_sha256_from_body", "UNIT", "-", "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "release.yml fence template, bare fallback, uppercase, missing -> None")
+
+    # -- find_setup_asset host allow-list -----------------------------------
+    _bad = []
+    try:
+        _rel = {"assets": [
+            {"name": "NeoFace-Setup-0.6.0.exe",
+             "url": "https://github.com/Jaskaran9880/NeoFace/releases/download/v0.6.0/NeoFace-Setup-0.6.0.exe",
+             "size": 100},
+            {"name": "NeoFace-Setup-0.6.0.exe",
+             "url": "https://evil.example.com/NeoFace-Setup-0.6.0.exe",
+             "size": 100},
+            {"name": "checksums.txt",
+             "url": "https://github.com/Jaskaran9880/NeoFace/releases/download/v0.6.0/checksums.txt",
+             "size": 10},
+        ]}
+        _asset = _up.find_setup_asset(_rel, "0.6.0")
+        if not _asset or "github.com" not in _asset["url"]:
+            _bad.append("allowed-host asset not selected: %r" % (_asset,))
+        if _up.find_setup_asset(_rel, "0.7.0") is not None:
+            _bad.append("missing version asset did not yield None")
+        _evil = {"assets": [{"name": "NeoFace-Setup-0.6.0.exe",
+                             "url": "https://evil.example.com/NeoFace-Setup-0.6.0.exe",
+                             "size": 100}]}
+        if _up.find_setup_asset(_evil, "0.6.0") is not None:
+            _bad.append("foreign-host asset was NOT rejected")
+        if _up.find_setup_asset(None, "0.6.0") is not None:
+            _bad.append("None release did not yield None")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/find_setup_asset", "UNIT", "-", "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "allowed-host picked, foreign host rejected, missing -> None")
+
+    # -- detect_install_mode + local_version on real and synthetic roots ----
+    _bad = []
+    try:
+        _mode_real = _up.detect_install_mode(_REPO_ROOT)
+        if _mode_real != "git":
+            _bad.append("repo root detected as %r (want 'git')" % _mode_real)
+        _ver_real = _up.local_version(_REPO_ROOT)
+        if _ver_real.get("source") != "git" or not _ver_real.get("version"):
+            _bad.append("repo local_version -> %r" % (_ver_real,))
+        _tmp = tempfile.mkdtemp(prefix="nf-updater-test-")
+        try:
+            if _up.detect_install_mode(_tmp) != "installed":
+                _bad.append("no-.git temp root not detected as 'installed'")
+            os.makedirs(os.path.join(_tmp, ".git"))   # .git but no remote/origin
+            if _up.detect_install_mode(_tmp) != "installed":
+                _bad.append("foreign/uncloned .git not detected as 'installed'")
+            with open(os.path.join(_tmp, "VERSION"), "w", encoding="utf-8") as _f:
+                _f.write("9.9.9\n")
+            _ver_tmp = _up.local_version(_tmp)
+            if _ver_tmp != {"version": "9.9.9", "sha": None, "source": "version_file"}:
+                _bad.append("VERSION-file root -> %r" % (_ver_tmp,))
+        finally:
+            _shutil_tmp.rmtree(_tmp, ignore_errors=True)
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    log_result("unit/mode+version", "UNIT", "-", "FAIL" if _bad else "PASS",
+               "; ".join(_bad)[:250] if _bad else
+               "repo=git+describe, bare root=installed, VERSION file=version_file")
+
+# ====================================================================
 #  SUMMARY TABLE
 # ====================================================================
 print("\n" + "=" * 80)
