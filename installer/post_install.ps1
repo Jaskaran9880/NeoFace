@@ -3,7 +3,8 @@
 # installed tree:  powershell -File post_install.ps1 -AppDir "C:\...\NeoFace"
 param(
     [Parameter(Mandatory = $true)]
-    [string]$AppDir
+    [string]$AppDir,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +20,14 @@ if (!(Test-Path $AppDir)) { throw "AppDir not found: $AppDir" }
 $py = Join-Path $AppDir "runtime\python.exe"
 $pyw = Join-Path $AppDir "runtime\pythonw.exe"
 if (!(Test-Path $py)) { throw "Bundled Python missing: $py" }
+
+# --- Version marker -------------------------------------------------------
+# Installed builds have no .git; <AppDir>\VERSION is what lets the dashboard
+# report a real version and the updater compare against the latest release.
+if ($Version) {
+    Set-Content -Path (Join-Path $AppDir "VERSION") -Value $Version -Encoding ASCII -NoNewline
+    Write-Host "[post-install] VERSION -> $Version"
+}
 
 $pd = "C:\ProgramData\NeoFace"
 Write-Host "[post-install] data dir $pd"
@@ -131,9 +140,25 @@ Write-Host "  NeoFace-Daemon (starts at logon)"
 $uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"$AppDir\tools\update_notifier.py`"" -WorkingDirectory $AppDir
 $uTrig = New-ScheduledTaskTrigger -AtLogOn
 $uTrig.Delay = 'PT1M'
-$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+# PS 5.1: AtLogOn has no -RepetitionInterval, so graft the Repetition block
+# from a Once trigger onto the logon trigger (the standard idiom). Hourly
+# re-check for the whole session; StartWhenAvailable catches sleep/hibernate.
+$uRepTrig = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 9999)
+$uTrig.Repetition = $uRepTrig.Repetition
+$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RandomDelay (New-TimeSpan -Minutes 10) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 $uPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $uPrincipal -Force | Out-Null
-Write-Host "  NeoFace-UpdateCheck (checks at sign-in)"
+Write-Host "  NeoFace-UpdateCheck (sign-in + every hour)"
+
+# On-demand elevated apply task: registered here because post_install runs
+# elevated already - its RunLevel Highest is the standing consent that lets
+# a non-elevated dashboard/notifier start it via Start-ScheduledTask with
+# NO UAC prompt. The far-future Once trigger never fires by itself.
+$aaAct = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$AppDir\tools\apply_update.ps1`" -FromTask" -WorkingDirectory $AppDir
+$aaTrig = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)
+$aaSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+$aaPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName "NeoFace-UpdateApply" -Action $aaAct -Trigger $aaTrig -Settings $aaSet -Principal $aaPrincipal -Force | Out-Null
+Write-Host "  NeoFace-UpdateApply (on-demand elevated apply)"
 
 Write-Host "[post-install] done"

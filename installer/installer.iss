@@ -40,6 +40,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 ; Full app payload (face_unlock, tools, templates, static, dashboard,
 ; runtime\, cp\, installer_scripts\, launchers\) from the dist tree.
+; Keep the user's config across updates: Inno uses the FIRST matching
+; [Files] entry, so this must precede the wildcard below. The wildcard's
+; ignoreversion would otherwise overwrite {app}\config.toml on every update.
+Source: "..\dist\config.toml"; DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "..\dist\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
@@ -56,7 +60,7 @@ Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Cr
 [Run]
 ; Runs during install (progress page): models from cloud, DLL registration,
 ; scheduled tasks. The wizard below is the interactive first-run step.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer_scripts\post_install.ps1"" -AppDir ""{app}"""; StatusMsg: "Downloading models and registering the unlock tile..."; Flags: runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer_scripts\post_install.ps1"" -AppDir ""{app}"" -Version {#MyAppVersion}"; StatusMsg: "Downloading models and registering the unlock tile..."; Flags: runhidden waituntilterminated
 Filename: "{app}\runtime\python.exe"; Parameters: """{app}\tools\setup_wizard.py"""; WorkingDir: "{app}"; Description: "Run setup wizard now (enroll your face)"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
