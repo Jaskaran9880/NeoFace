@@ -58,7 +58,7 @@ Copy-Tree (Join-Path $ROOT "static")      (Join-Path $dist "static")
 New-Item -ItemType Directory -Path (Join-Path $dist "tools") -Force | Out-Null
 foreach ($t in @("enroll_fast.py", "fetch_fast.py", "set_password_machine.py",
                  "test_unlock.py", "update_notifier.py", "setup_wizard.py",
-                 "win_consent.ps1")) {
+                 "apply_update.ps1", "win_consent.ps1")) {
     Copy-Item (Join-Path $ROOT "tools\$t") (Join-Path $dist "tools\$t") -Force
 }
 
