@@ -1071,7 +1071,7 @@ def restore_prefs_after_update():
 # --- release notes -> safe HTML (the "what changed" modal) ----------------
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https://[^)\s]+)\)")
 _MD_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
-_MD_CODE_RE = re.compile(r"`([^`]+)`")
+_MD_CODE_RE = re.compile(r"`+([^`]+)`+")   # 1 or 2 backticks each side (release notes use both)
 
 
 def release_notes_html(body, max_chars=12000):
