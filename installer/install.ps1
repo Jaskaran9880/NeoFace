@@ -130,11 +130,25 @@ if ($isAdmin) {
     $uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"$ROOT\tools\update_notifier.py`""
     $uTrig = New-ScheduledTaskTrigger -AtLogOn
     $uTrig.Delay = 'PT1M'
-    $uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+    # PS 5.1: graft an hourly Repetition onto the logon trigger (same idiom
+    # as installer/post_install.ps1) so updates are checked every hour.
+    $uRepTrig = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 9999)
+    $uTrig.Repetition = $uRepTrig.Repetition
+    $uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RandomDelay (New-TimeSpan -Minutes 10) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
     $uPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     Unregister-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $uPrin -Force | Out-Null
-    Write-Host "  Update notifier installed (checks at sign-in)" -ForegroundColor Green
+    Write-Host "  Update notifier installed (sign-in + every hour)" -ForegroundColor Green
+    # On-demand elevated apply task (RunLevel Highest = standing consent, so
+    # the dashboard can apply updates without a UAC prompt). -AppDir points
+    # the script at this clone rather than the LocalAppData default.
+    $aaAct = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ROOT\tools\apply_update.ps1`" -FromTask -AppDir `"$ROOT`""
+    $aaTrig = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)
+    $aaSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+    $aaPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+    Unregister-ScheduledTask -TaskName "NeoFace-UpdateApply" -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName "NeoFace-UpdateApply" -Action $aaAct -Trigger $aaTrig -Settings $aaSet -Principal $aaPrin -Force | Out-Null
+    Write-Host "  Update apply task installed (on-demand, elevated)" -ForegroundColor Green
 } else {
     if (!$daemonTask) {
         Write-Host "  Run as Admin to install daemon, or run: .\cp\deploy_all.ps1" -ForegroundColor Yellow
