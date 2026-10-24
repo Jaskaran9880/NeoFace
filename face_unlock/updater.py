@@ -1134,10 +1134,8 @@ def release_notes_html(body, max_chars=12000):
                 close_list()
                 out.append("<%s>" % wanted)
                 list_stack = wanted
-            item = html.escape((bullet or numbered).group(1))
-            item = _MD_BOLD_RE.sub(r"<strong>\1</strong>", item)
-            item = _MD_CODE_RE.sub(r"<code>\1</code>", item)
-            out.append("<li>%s</li>" % item)
+            # Inline formatting is applied exactly ONCE, in the global pass.
+            out.append("<li>%s</li>" % html.escape((bullet or numbered).group(1)))
             continue
         close_list()
         para.append(html.escape(stripped))
@@ -1153,7 +1151,14 @@ def release_notes_html(body, max_chars=12000):
                 % (match.group(2), match.group(1)))
 
     rendered = "\n".join(out)
-    rendered = _MD_LINK_RE.sub(_link, rendered)
-    rendered = _MD_BOLD_RE.sub(r"<strong>\1</strong>", rendered)
-    rendered = _MD_CODE_RE.sub(r"<code>\1</code>", rendered)
-    return rendered
+    # Inline formatting ONCE, and never inside fenced code blocks - a backtick
+    # or ** inside <pre> must stay literal there.
+    parts = re.split(r"(<pre>.*?</pre>)", rendered, flags=re.S)
+    for _i, _part in enumerate(parts):
+        if _part.startswith("<pre>"):
+            continue
+        _part = _MD_LINK_RE.sub(_link, _part)
+        _part = _MD_BOLD_RE.sub(r"<strong>\1</strong>", _part)
+        _part = _MD_CODE_RE.sub(r"<code>\1</code>", _part)
+        parts[_i] = _part
+    return "".join(parts)
