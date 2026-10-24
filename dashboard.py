@@ -1055,9 +1055,9 @@ def api_update_status():
     notes_html is only rendered while an update is available.
     """
     out = {"mode": None, "install_mode": None, "local_version": None,
-           "remote_version": None, "update_available": False,
+           "local_sha": None, "remote_version": None, "update_available": False,
            "behind_count": None, "commits": [], "impact": "none",
-           "notes_html": "", "stale": False, "error": None,
+           "notes_html": "", "stale": False, "error": None, "cache_age_s": None,
            "apply": None, "prefs": None, "checked_at": int(time.time())}
     up = _updater()
     if up is None:
@@ -1070,17 +1070,40 @@ def api_update_status():
         local = up.local_version(ROOT)
         out["local_version"] = local.get("version")
         if out["install_mode"] == "git":
-            # Cache-aware, exactly like GET /api/update/check without force:
-            # a status poll every few seconds must not mean a git fetch.
-            payload = _fresh_cached_update()
+            # Cache-aware, exactly like GET /api/update/check: a status poll
+            # must not mean a git fetch. ?force=1 gets the same 30s floor and
+            # single-flight lock the frozen /check endpoint enforces.
+            force = request.args.get("force", "").lower() in ("1", "true", "yes", "on")
+            if force:
+                data = _read_update_cache()
+                last_attempt = 0
+                for key in ("success", "failure"):
+                    entry = data.get(key)
+                    if isinstance(entry, dict):
+                        last_attempt = max(last_attempt, entry.get("saved_at") or 0)
+                if last_attempt and time.time() - last_attempt < UPDATE_FORCE_MIN_INTERVAL:
+                    force = False
+            payload = None if force else _fresh_cached_update()
             if payload is None:
-                payload = _perform_update_check()
+                if _UPDATE_LOCK.acquire(blocking=False):
+                    try:
+                        payload = _perform_update_check()
+                    finally:
+                        _UPDATE_LOCK.release()
+                else:
+                    # Another tab is checking right now - serve last-good data
+                    # (or an honest in-progress note), never a second fetch.
+                    payload = _stale_update_payload() or {
+                        "ok": False, "mode": "git",
+                        "error": "A check is already running in another tab."}
             out["mode"] = payload.get("mode") or "git"
+            out["local_sha"] = payload.get("local_sha")
             out["behind_count"] = payload.get("behind_count")
             out["commits"] = payload.get("commits") or []
             out["impact"] = payload.get("impact")
             out["stale"] = bool(payload.get("stale"))
             out["error"] = payload.get("error")
+            out["cache_age_s"] = payload.get("cache_age_s")
             out["update_available"] = bool(
                 payload.get("ok") and not payload.get("up_to_date")
                 and isinstance(payload.get("behind_count"), int)
@@ -1090,6 +1113,7 @@ def api_update_status():
             release = up.fetch_latest_release()
             out["remote_version"] = release.get("version")
             out["stale"] = bool(release.get("stale"))
+            out["cache_age_s"] = release.get("cache_age_s")
             out["update_available"] = up.is_newer(release.get("tag"),
                                                   local.get("version"))
             if out["update_available"]:

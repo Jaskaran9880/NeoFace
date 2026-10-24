@@ -236,6 +236,14 @@
         }
         @keyframes updateSpin { to { transform: rotate(360deg); } }
 
+        /* Update apply progress bar (indeterminate while the size is unknown) */
+        .update-progress-indet { animation: updateIndet 1.6s ease-in-out infinite; }
+        @keyframes updateIndet {
+            0%   { margin-left: -45%; }
+            50%  { margin-left: 25%; }
+            100% { margin-left: 100%; }
+        }
+
         /* Section card */
         .section-card {
             padding: 24px;
@@ -966,8 +974,13 @@
     function escapeHtml(t) { return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
     // ======================== SOFTWARE UPDATES ========================
-    let updateState = { phase: 'idle' };   // idle | checking | up-to-date | behind | unknown | error | unavailable
+    // Card state reads GET /api/update/status (unified git + installed
+    // contract); an apply runs in the background and is polled at 1s via
+    // /api/update/apply-status. The frozen /api/update/check endpoint is
+    // untouched (tests + tools/update_notifier.py keep using it).
+    let updateState = { phase: 'idle' };   // idle | checking | up-to-date | behind | applying | unknown | unavailable | error
     let updateInFlight = false;
+    let applyPollTimer = null;
 
     function setUpdateState(next) {
         updateState = next || { phase: 'idle' };
@@ -979,10 +992,12 @@
     function updateHeaderBadge() {
         const el = document.getElementById('updateBadge');
         if (!el) return;
-        const r = updateState.result;
-        const n = (r && r.ok && typeof r.behind_count === 'number') ? r.behind_count : 0;
-        if (n > 0) {
-            el.textContent = n + ' update' + (n === 1 ? '' : 's') + ' available';
+        const r = updateState.status;
+        if (r && r.update_available) {
+            const n = (typeof r.behind_count === 'number') ? r.behind_count : 0;
+            el.textContent = n > 0
+                ? n + ' update' + (n === 1 ? '' : 's') + ' available'
+                : 'v' + (r.remote_version || '?') + ' available';
             el.style.display = 'inline-flex';
         } else {
             el.textContent = '';
@@ -990,38 +1005,93 @@
         }
     }
 
-    function updateStateFrom(r) {
-        if (!r || typeof r !== 'object') return { phase: 'error', message: 'No response from the dashboard.' };
-        if (!r.mode && r.error) return { phase: 'error', message: r.error };   // 401 / 429 / transport
-        if (r.ok === false || r.mode === 'none') {
-            return { phase: 'unavailable', message: r.error || 'Update checks are not available on this install.', result: r };
+    function updateStateFrom(s) {
+        if (!s || typeof s !== 'object') return { phase: 'error', message: 'No response from the dashboard.' };
+        if (!s.mode && s.error) return { phase: 'error', message: s.error, status: s };   // 401 / transport
+        const base = { status: s, message: s.error || null };
+        const ap = s.apply || {};
+        const applying = ['downloading', 'verifying', 'installing', 'awaiting_elevation'].indexOf(ap.state) >= 0;
+        if (applying) return Object.assign({ phase: 'applying' }, base);
+        if (s.error) return Object.assign({ phase: 'error' }, base);
+        if (!s.update_available) {
+            // The REST fallback reached GitHub, but this install's local SHA
+            // could not be compared - be honest instead of "up to date".
+            if (s.mode === 'api' && s.behind_count == null && !s.remote_version) {
+                return Object.assign({ phase: 'unknown',
+                    message: "Checked GitHub, but couldn't compare with this install (local SHA not comparable)." }, base);
+            }
+            if (s.mode === 'none') {
+                return Object.assign({ phase: 'unavailable',
+                    message: s.error || 'Update checks are not available on this install.' }, base);
+            }
+            return Object.assign({ phase: 'up-to-date' }, base);
         }
-        const base = { result: r, message: r.error || null };
-        if (r.up_to_date) return Object.assign({ phase: 'up-to-date' }, base);
-        if (typeof r.behind_count === 'number' && r.behind_count > 0) return Object.assign({ phase: 'behind' }, base);
-        if (r.error) return Object.assign({ phase: 'error' }, base);
-        // API fallback reached GitHub, but this install's local SHA could not
-        // be resolved into an ahead/behind count (e.g. abbreviated or dirty
-        // commit GitHub cannot compare) - be honest about it instead of
-        // reporting the generic "check failed".
-        if (r.mode === 'api' && r.behind_count == null && r.remote_sha) {
-            return { phase: 'unknown', message: "Checked GitHub, but couldn't compare with this install (local SHA not comparable).", result: r };
-        }
-        return { phase: 'error', message: 'Could not compare this install with GitHub.', result: r };
+        return Object.assign({ phase: 'behind' }, base);
     }
 
     async function checkUpdates(force) {
         if (updateInFlight) return;                       // in-flight guard
         updateInFlight = true;
-        setUpdateState({ phase: 'checking', result: updateState.result });
+        setUpdateState({ phase: 'checking', status: updateState.status });
         try {
-            const r = await api('/api/update/check' + (force ? '?force=1' : ''));
-            setUpdateState(updateStateFrom(r));
+            const s = await api('/api/update/status' + (force ? '?force=1' : ''));
+            const next = updateStateFrom(s);
+            setUpdateState(next);
+            if (next.phase === 'applying') startApplyPoll();
         } catch (e) {
-            setUpdateState({ phase: 'error', message: e && e.message ? e.message : 'Update check failed.', result: updateState.result });
+            setUpdateState({ phase: 'error', message: e && e.message ? e.message : 'Update check failed.', status: updateState.status });
         } finally {
             updateInFlight = false;
         }
+    }
+
+    // ---- one-click apply + 1s progress polling -------------------------
+    async function startUpdate() {
+        const btn = document.getElementById('updateNowBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
+        try {
+            const r = await api('/api/update/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ relaunch: true })
+            });
+            if (r && r.ok) {
+                setUpdateState(Object.assign({}, updateState, { phase: 'applying', applyError: null }));
+                startApplyPoll();
+            } else {
+                const msg = (r && r.error) ? r.error : 'Could not start the update.';
+                setUpdateState(Object.assign({}, updateState, { applyError: msg }));
+                if (btn) { btn.disabled = false; btn.textContent = 'Update Now'; }
+            }
+        } catch (e) {
+            setUpdateState(Object.assign({}, updateState, { applyError: e && e.message ? e.message : 'Could not start the update.' }));
+            if (btn) { btn.disabled = false; btn.textContent = 'Update Now'; }
+        }
+    }
+
+    function startApplyPoll() {
+        if (applyPollTimer) return;
+        applyPollTimer = setInterval(pollApplyStatus, 1000);
+        pollApplyStatus();
+    }
+
+    async function pollApplyStatus() {
+        try {
+            const ap = await api('/api/update/apply-status');
+            if (!ap || ap.error || !ap.state) return;     // fail-soft: keep polling
+            const status = updateState.status || {};
+            status.apply = ap;
+            const next = updateStateFrom(status);
+            if (ap.state === 'failed') next.applyError = ap.message || 'The update failed.';
+            if (ap.state === 'done') next.applyError = null;
+            setUpdateState(next);
+            if (ap.state === 'done' || ap.state === 'failed') {
+                clearInterval(applyPollTimer);
+                applyPollTimer = null;
+                // Re-derive from the server with fresh version info.
+                checkUpdates(true);
+            }
+        } catch (e) { /* fail-soft: keep polling until done/failed */ }
     }
 
     function updateAgeText(seconds) {
@@ -1080,28 +1150,61 @@
 
     function updatesCardHtml(s) {
         const st = s || { phase: 'idle' };
-        const r = st.result || null;
+        const r = st.status || null;
         let badge = '<span class="badge badge-blue">Not checked</span>';
-        let body = '<p class="detail-text">Compares this install with GitHub. Nothing is downloaded or applied automatically.</p>';
+        let body = '<p class="detail-text">Compares this install with GitHub and applies updates with one click.</p>';
         let btnLabel = 'Check for Updates';
         let btnClass = 'glass-btn btn-primary btn-sm';
+        const btnDisabled = st.phase === 'checking' || st.phase === 'applying';
 
         if (st.phase === 'checking') {
             badge = '<span class="badge badge-blue">Checking...</span>';
             body = '<div class="pulse" style="font-size:13px;color:#94a3b8"><span class="update-spin"></span>Checking GitHub for updates...</div>';
             btnLabel = 'Checking...';
+        } else if (st.phase === 'applying') {
+            const ap = r && r.apply ? r.apply : {};
+            const pct = (typeof ap.pct === 'number' && ap.pct != null)
+                ? Math.max(0, Math.min(100, ap.pct)) : null;
+            badge = '<span class="badge badge-blue">' + (ap.state === 'installing' ? 'Installing...' : 'Updating...') + '</span>';
+            body = '<p style="font-size:13px;color:#94a3b8">' + escapeHtml(ap.message || 'Applying the update...') + '</p>'
+                + '<div style="margin-top:10px;height:6px;border-radius:3px;background:rgba(148,163,184,0.18);overflow:hidden">'
+                + '<div class="' + (pct == null ? 'update-progress-indet' : '') + '"'
+                + ' style="height:100%;width:' + (pct == null ? '45%' : pct + '%') + ';border-radius:3px;background:#60a5fa;transition:width 0.4s ease"></div>'
+                + '</div>'
+                + (pct == null
+                    ? '<p class="detail-text" style="margin-top:6px">Downloading and verifying - the screen may flicker once while the installer runs.</p>'
+                    : '<p class="detail-text" style="margin-top:6px">' + pct + '%</p>');
+            btnLabel = 'Updating...';
         } else if (st.phase === 'up-to-date') {
             badge = '<span class="badge badge-green">Up to date</span>';
-            body = '<p style="font-size:13px;color:#94a3b8">You are running the latest version.</p>' + updateStaleNote(r);
+            body = '<p style="font-size:13px;color:#94a3b8">You are running the latest version'
+                + (r && r.remote_version ? ' (v' + escapeHtml(String(r.remote_version)) + ' is the latest release)' : '')
+                + '.</p>' + updateStaleNote(r);
         } else if (st.phase === 'behind') {
-            const n = r.behind_count;
-            badge = '<span class="badge badge-red">' + escapeHtml(String(n)) + ' update' + (n === 1 ? '' : 's') + ' available</span>';
-            body = '<p style="font-size:13px;color:#f87171">' + escapeHtml(String(n)) + ' new commit' + (n === 1 ? '' : 's') + ' on origin/main.</p>'
+            const n = (r && typeof r.behind_count === 'number') ? r.behind_count : 0;
+            const installed = r && r.install_mode === 'installed';
+            const remote = r && r.remote_version ? String(r.remote_version) : null;
+            badge = '<span class="badge badge-red">'
+                + (n > 0
+                    ? escapeHtml(String(n)) + ' update' + (n === 1 ? '' : 's') + ' available'
+                    : 'v' + escapeHtml(remote || '?') + ' available')
+                + '</span>';
+            body = '<p style="font-size:13px;color:#f87171">'
+                + (n > 0
+                    ? escapeHtml(String(n)) + ' new commit' + (n === 1 ? '' : 's') + ' on origin/main.'
+                    : 'Version v' + escapeHtml(remote || '?') + ' is available (you have '
+                       + escapeHtml(String(r && r.local_version || '?')) + ').')
+                + '</p>'
                 + updateCommitsHtml(r)
-                + (r.changes_summary ? '<p class="detail-text" style="margin-top:8px">Changes: ' + escapeHtml(r.changes_summary) + '</p>' : '')
-                + updateImpactHtml(r.impact)
+                + (r && r.changes_summary ? '<p class="detail-text" style="margin-top:8px">Changes: ' + escapeHtml(r.changes_summary) + '</p>' : '')
+                + updateImpactHtml(r && r.impact)
                 + updateStaleNote(r)
-                + '<p style="margin-top:10px;font-size:12px;color:#fbbf24">Run git pull or re-run the installer to update.</p>';
+                + '<div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+                + '<button id="updateNowBtn" class="glass-btn btn-primary btn-sm" onclick="startUpdate()">Update Now</button>'
+                + '<span class="detail-text">' + (installed
+                    ? 'Downloads the installer, verifies its SHA256, then applies silently.'
+                    : 'Runs git pull and restarts the affected services.') + '</span>'
+                + '</div>';
         } else if (st.phase === 'unknown') {
             badge = '<span class="badge badge-gray">Comparison unavailable</span>';
             body = '<p style="font-size:13px;color:#94a3b8">' + escapeHtml(st.message || "Checked GitHub, but couldn't compare with this install (local SHA not comparable).") + '</p>'
@@ -1127,15 +1230,25 @@
             btnClass = 'glass-btn btn-ghost btn-sm';
         }
 
+        // Inline apply-failure banner: a POST that failed before kickoff, or
+        // a failed apply state while an update is still available (retryable).
+        let applyErr = st.applyError || null;
+        if (!applyErr && r && r.apply && r.apply.state === 'failed' && st.phase === 'behind') {
+            applyErr = r.apply.message || 'The last update attempt failed.';
+        }
+        const applyErrHtml = applyErr
+            ? '<p style="margin-top:10px;font-size:12px;color:#f87171">Update failed: ' + escapeHtml(applyErr) + '</p>'
+            : '';
+
         return '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">'
             + '<h2 style="font-size:16px;font-weight:600;color:#f1f5f9">Software updates</h2>'
             + badge
             + '</div>'
             + '<div style="margin-bottom:12px">' + updateVersionHtml(r) + '</div>'
-            + '<div id="updateResult">' + body + '</div>'
+            + '<div id="updateResult">' + body + applyErrHtml + '</div>'
             + '<div style="margin-top:16px">'
             + '<button id="checkUpdateBtn" class="' + btnClass + '" onclick="checkUpdates(true)"'
-            + (st.phase === 'checking' ? ' disabled' : '')
+            + (btnDisabled ? ' disabled' : '')
             + '>' + btnLabel + '</button>'
             + '</div>';
     }
