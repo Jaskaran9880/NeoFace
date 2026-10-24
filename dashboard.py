@@ -935,6 +935,16 @@ def local_version_info():
             ok, out, _ = _git(["rev-parse", "--short=7", "HEAD"], 5)
             if ok and out.strip():
                 sha = out.strip()
+        if not sha:
+            # Installed (no-.git) build: the installer stamps <ROOT>\VERSION
+            # so an installed install reports a real version, not the fallback.
+            try:
+                with open(os.path.join(ROOT, "VERSION"), "r", encoding="utf-8") as f:
+                    _v = f.read().strip()
+                if _v:
+                    version = _v
+            except OSError:
+                pass
         _VERSION_MEMO.update({"at": now, "version": version, "sha": sha})
         return {"version": version, "sha": sha}
 
@@ -1004,6 +1014,203 @@ def api_update_check():
     finally:
         _UPDATE_LOCK.release()
     return jsonify(_finalize(payload))
+
+
+# --- Unified update status / apply / notes / preferences -------------------
+# Contract notes:
+#   * /api/update/check stays untouched (frozen by tests [27]-[31]); the
+#     card reads /api/update/status, which reuses _perform_update_check()
+#     internally for git installs and the release feed for installed builds.
+#   * apply runs in a background thread; outcomes land in apply_state.json
+#     (updater.apply_status) so the dashboard can be killed by its own
+#     update and the relaunched instance still reports what happened.
+_UPDATER_MEMO = {"mod": None, "tried": False}
+_APPLY_JOB = {"thread": None}
+
+
+def _updater():
+    """face_unlock.updater imported once, fail-soft -> None when broken."""
+    if not _UPDATER_MEMO["tried"]:
+        _UPDATER_MEMO["tried"] = True
+        try:
+            from face_unlock import updater as _mod
+            _UPDATER_MEMO["mod"] = _mod
+        except Exception as _exc:
+            app.logger.warning("updater import failed: %r" % (_exc,))
+            _UPDATER_MEMO["mod"] = None
+        if _UPDATER_MEMO["mod"] is not None:
+            try:   # first use after an update re-seeds the [update] pref
+                _UPDATER_MEMO["mod"].restore_prefs_after_update()
+            except Exception:
+                pass
+    return _UPDATER_MEMO["mod"]
+
+
+@app.route("/api/update/status")
+@require_api_key
+def api_update_status():
+    """Unified card state for both install modes; always 200 + JSON.
+
+    mode: "git" | "release" | "none" - install_mode: "git" | "installed".
+    notes_html is only rendered while an update is available.
+    """
+    out = {"mode": None, "install_mode": None, "local_version": None,
+           "remote_version": None, "update_available": False,
+           "behind_count": None, "commits": [], "impact": "none",
+           "notes_html": "", "stale": False, "error": None,
+           "apply": None, "prefs": None, "checked_at": int(time.time())}
+    up = _updater()
+    if up is None:
+        out["error"] = "Updater module unavailable."
+        return jsonify(out)
+    try:
+        out["prefs"] = up.get_update_prefs()
+        out["apply"] = up.apply_status()
+        out["install_mode"] = up.detect_install_mode(ROOT)
+        local = up.local_version(ROOT)
+        out["local_version"] = local.get("version")
+        if out["install_mode"] == "git":
+            # Cache-aware, exactly like GET /api/update/check without force:
+            # a status poll every few seconds must not mean a git fetch.
+            payload = _fresh_cached_update()
+            if payload is None:
+                payload = _perform_update_check()
+            out["mode"] = payload.get("mode") or "git"
+            out["behind_count"] = payload.get("behind_count")
+            out["commits"] = payload.get("commits") or []
+            out["impact"] = payload.get("impact")
+            out["stale"] = bool(payload.get("stale"))
+            out["error"] = payload.get("error")
+            out["update_available"] = bool(
+                payload.get("ok") and not payload.get("up_to_date")
+                and isinstance(payload.get("behind_count"), int)
+                and payload["behind_count"] > 0)
+        else:
+            out["mode"] = "release"
+            release = up.fetch_latest_release()
+            out["remote_version"] = release.get("version")
+            out["stale"] = bool(release.get("stale"))
+            out["update_available"] = up.is_newer(release.get("tag"),
+                                                  local.get("version"))
+            if out["update_available"]:
+                out["notes_html"] = up.release_notes_html(
+                    release.get("body") or "")
+    except Exception as _exc:
+        _code = getattr(_exc, "code", None)
+        out["error"] = getattr(_exc, "message", None) or (
+            "Update status failed: %s" % _exc)
+        out["mode"] = out["mode"] or "none"
+        if _code in ("offline", "rate_limited", "api_unreachable"):
+            out["stale"] = True
+    return jsonify(out)
+
+
+@app.route("/api/update/apply", methods=["POST"])
+@require_api_key
+def api_update_apply():
+    """Kick off an apply; returns immediately with {ok, method:'background'}.
+
+    409 when an apply is already running or already current, 429 when a job
+    thread is alive. Failures after kickoff surface through apply-status
+    (state file), including a declined UAC prompt.
+    """
+    up = _updater()
+    if up is None:
+        return jsonify({"ok": False, "code": "unavailable",
+                        "error": "Updater module unavailable."}), 503
+    payload = request.get_json(silent=True) or {}
+    relaunch = bool(payload.get("relaunch", False))
+    thread = _APPLY_JOB.get("thread")
+    if thread is not None and thread.is_alive():
+        return jsonify({"ok": False, "code": "in_progress",
+                        "error": "An update is already being applied."}), 409
+
+    state = up.apply_status()
+    if state.get("state") in ("downloading", "verifying", "installing"):
+        return jsonify({"ok": False, "code": "in_progress",
+                        "error": "An update is already being applied."}), 409
+
+    def _apply_job():
+        try:
+            result = up.prepare_apply(interactive=True,
+                                      relaunch_dashboard=relaunch)
+            app.logger.info("apply finished: %r" % (result,))
+        except Exception as _exc:
+            _code = getattr(_exc, "code", "apply_failed")
+            _msg = getattr(_exc, "message", None) or str(_exc)
+            try:
+                up.write_apply_state("failed", message=_msg)
+            except Exception:
+                pass
+            app.logger.warning("apply failed (%s): %s" % (_code, _msg))
+
+    thread = threading.Thread(target=_apply_job, daemon=True,
+                              name="neoface-apply")
+    _APPLY_JOB["thread"] = thread
+    thread.start()
+    return jsonify({"ok": True, "method": "background",
+                    "message": "Update started - watch this card for progress."})
+
+
+@app.route("/api/update/apply-status")
+@require_api_key
+def api_update_apply_status():
+    """Live apply state (download pct / installing / done / failed)."""
+    up = _updater()
+    if up is None:
+        return jsonify({"state": "idle", "pct": None, "message":
+                        "Updater module unavailable."})
+    return jsonify(up.apply_status())
+
+
+@app.route("/api/update/notes")
+@require_api_key
+def api_update_notes():
+    """Release notes for ?tag= (defaults to the latest release), rendered."""
+    up = _updater()
+    if up is None:
+        return jsonify({"error": "Updater module unavailable."}), 503
+    tag = request.args.get("tag", "").strip()
+    try:
+        if not tag:
+            release = up.fetch_latest_release()
+            tag = release.get("tag")
+            body = release.get("body") or ""
+            return jsonify({"tag": tag, "version": release.get("version"),
+                            "notes_html": up.release_notes_html(body)})
+        return jsonify(up.fetch_release_notes(tag))
+    except Exception as _exc:
+        return jsonify({"error": getattr(_exc, "message", None) or str(_exc)}), 200
+
+
+@app.route("/api/update/preferences", methods=["GET", "POST"])
+@require_api_key
+def api_update_preferences():
+    """GET -> {mode, asked}; POST {"mode": "auto"|"notify"} saves the choice."""
+    up = _updater()
+    if up is None:
+        return jsonify({"error": "Updater module unavailable."}), 503
+    if request.method == "GET":
+        return jsonify(up.get_update_prefs())
+    payload = request.get_json(silent=True) or {}
+    mode = str(payload.get("mode") or "").strip().lower()
+    try:
+        return jsonify(up.set_update_prefs(mode))
+    except Exception as _exc:
+        return jsonify({"ok": False,
+                        "error": getattr(_exc, "message", None) or str(_exc)}), 400
+
+
+@app.route("/api/update/notes/shown", methods=["POST"])
+@require_api_key
+def api_update_notes_shown():
+    """Record that the what-changed modal for ?version was shown once."""
+    up = _updater()
+    if up is None:
+        return jsonify({"error": "Updater module unavailable."}), 503
+    payload = request.get_json(silent=True) or {}
+    version = str(payload.get("version") or "").strip()
+    return jsonify(up.set_notes_shown(version))
 
 
 @app.route("/api/photos")
@@ -1603,10 +1810,23 @@ Register-ScheduledTask -TaskName "NeoFace-Daemon" -Action $act -Trigger $trig -S
 $uAct = New-ScheduledTaskAction -Execute $pyw -Argument "`"${ROOT}\tools\update_notifier.py`""
 $uTrig = New-ScheduledTaskTrigger -AtLogOn
 $uTrig.Delay = 'PT1M'
-$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+# PS 5.1: graft an hourly Repetition onto the logon trigger (same idiom as
+# installer/post_install.ps1) - updates are checked every hour, not once.
+$uRepTrig = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 9999)
+$uTrig.Repetition = $uRepTrig.Repetition
+$uSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RandomDelay (New-TimeSpan -Minutes 10) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 $uPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Unregister-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName "NeoFace-UpdateCheck" -Action $uAct -Trigger $uTrig -Settings $uSet -Principal $uPrin -Force | Out-Null
+# On-demand elevated apply task: registering it HERE (this blob already runs
+# elevated via UAC) is the standing consent that lets the non-elevated
+# dashboard apply updates later with no further prompts.
+$aaAct = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"`"${ROOT}\tools\apply_update.ps1`"`" -FromTask -AppDir `"`"${ROOT}`"`""
+$aaTrig = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)
+$aaSet = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+$aaPrin = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+Unregister-ScheduledTask -TaskName "NeoFace-UpdateApply" -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName "NeoFace-UpdateApply" -Action $aaAct -Trigger $aaTrig -Settings $aaSet -Principal $aaPrin -Force | Out-Null
 Write-Host "OK"
 """
 

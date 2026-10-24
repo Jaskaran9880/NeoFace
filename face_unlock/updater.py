@@ -897,6 +897,31 @@ if __name__ == "__main__":
     sys.exit(main())
 
 
+# --- release notes by tag (the "what changed" modal) ----------------------
+def fetch_release_notes(tag, timeout=10):
+    """{"tag","version","body","notes_html"} for one release tag.
+
+    Reuses the ETag cache when the tag matches the cached latest release;
+    otherwise fetches /releases/tags/<tag>. Raises UpdaterError (offline /
+    not_found / rate_limited) for the caller's fail-soft contract.
+    """
+    tag = str(tag or "").strip()
+    if not tag:
+        raise UpdaterError("not_found", "No release tag given.")
+    cache = _release_cache_read()
+    entry = cache.get("entry") if isinstance(cache, dict) else None
+    payload = entry.get("payload") if isinstance(entry, dict) else None
+    if isinstance(payload, dict) and payload.get("tag") == tag:
+        body = str(payload.get("body") or "")
+        return {"tag": tag, "version": payload.get("version"), "body": body,
+                "notes_html": release_notes_html(body)}
+    status, data, _ = _github_get_release(
+        "/releases/tags/%s" % urllib.parse.quote(tag, safe=""), timeout=timeout)
+    body = str((data or {}).get("body") or "")
+    return {"tag": tag, "version": tag.lstrip("v"), "body": body,
+            "notes_html": release_notes_html(body)}
+
+
 # --- update preference (auto | notify) ------------------------------------
 # Stored TWICE on purpose: config.toml [update] is the visible setting, and
 # the ProgramData mirror survives both an installer update (which used to
