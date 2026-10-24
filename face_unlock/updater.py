@@ -26,6 +26,8 @@ Security invariants (docs/SECURITY.md):
     elevated context (see tools/apply_update.ps1).
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -426,3 +428,179 @@ def fetch_latest_release(force=False, timeout=10):
                                     "etag": response_etag,
                                     "payload": payload}})
     return payload
+
+
+# --- download + verify -----------------------------------------------------
+_DOWNLOAD_CHUNK = 256 * 1024
+# In-process progress for the dashboard's 1s poll (survives nothing - the
+# authoritative cross-process state is apply_state.json written by the apply
+# script; this dict only fills in pct while the download runs in-process).
+_PROGRESS = {"phase": None, "done": 0, "total": None, "pct": None, "message": ""}
+
+
+def set_progress(phase=None, done=None, total=None, pct=None, message=None):
+    """Update the in-process download progress snapshot (thread-safe enough:
+    each field is a single atomic assignment; the reader tolerates tearing)."""
+    if phase is not None:
+        _PROGRESS["phase"] = phase
+    if done is not None:
+        _PROGRESS["done"] = done
+    if total is not None:
+        _PROGRESS["total"] = total
+    if pct is not None:
+        _PROGRESS["pct"] = pct
+    if message is not None:
+        _PROGRESS["message"] = message
+
+
+def get_progress():
+    """Copy of the in-process progress snapshot (never the live dict)."""
+    return dict(_PROGRESS)
+
+
+def verify_sha256(path, expected_hex):
+    """Streaming SHA256 of <path> compared in constant time with expected_hex."""
+    if not expected_hex:
+        return False
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return False
+    return hmac.compare_digest(digest.hexdigest().lower(),
+                               str(expected_hex).strip().lower())
+
+
+def _download_with_curl(url, dest, timeout):
+    """Fallback downloader (Win10 1803+ ships curl.exe). Raises on failure."""
+    exe = shutil.which("curl.exe") or "curl.exe"
+    try:
+        result = subprocess.run(
+            [exe, "-fsSL", "--retry", "3", "--connect-timeout", "10",
+             "-o", dest, url],
+            capture_output=True, timeout=timeout, encoding="utf-8",
+            errors="replace", shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise UpdaterError("download_failed", "curl download failed: %s" % exc,
+                           cacheable=True)
+    if result.returncode != 0:
+        detail = ((result.stderr or result.stdout or "").strip())[-200:]
+        raise UpdaterError("download_failed",
+                           "curl download failed: %s" % (detail or "unknown error"),
+                           cacheable=True)
+
+
+def download_latest(release=None, dest_dir=UPDATES_DIR, progress_cb=None,
+                    timeout=300):
+    """Download the release's setup exe, verify it, atomically finalize.
+
+    The URL comes from the API response (find_setup_asset already checked the
+    host allow-list). The bytes stream to <name>.part, are hashed, and are
+    only os.replace()d to the final name AFTER the hash matches the SHA256
+    published in the release notes. A mismatch deletes the .part file and
+    raises UpdaterError('hash_mismatch') - the file never exists as an
+    executable name unverified.
+    """
+    release = release if release is not None else fetch_latest_release()
+    version = release.get("version")
+    asset = find_setup_asset(release, version)
+    if asset is None:
+        raise UpdaterError("no_asset",
+                           "Release %s has no NeoFace-Setup exe on an allowed host."
+                           % release.get("tag"))
+    expected = release.get("sha256")
+    if not expected:
+        raise UpdaterError("no_hash",
+                           "Release %s publishes no SHA256 - automatic apply is refused."
+                           % release.get("tag"))
+
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except OSError as exc:
+        raise UpdaterError("download_failed", "Cannot create %s: %s" % (dest_dir, exc))
+
+    final_path = os.path.join(dest_dir, asset["name"])
+    if os.path.isfile(final_path) and verify_sha256(final_path, expected):
+        set_progress(phase="verifying", pct=100,
+                     message="Installer already downloaded and verified.")
+        if progress_cb:
+            progress_cb(1, 1)
+        return {"path": final_path, "sha256": expected,
+                "size": os.path.getsize(final_path), "tag": release.get("tag"),
+                "reused": True}
+
+    part_path = final_path + ".part"
+    set_progress(phase="downloading", done=0, total=asset.get("size"), pct=0,
+                 message="Downloading %s..." % asset["name"])
+    try:
+        try:
+            request = urllib.request.Request(
+                asset["url"],
+                headers={"User-Agent": GITHUB_USER_AGENT,
+                         "Accept": "application/octet-stream"})
+            done = 0
+            total = asset.get("size") if isinstance(asset.get("size"), int) else None
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                if response.headers.get("Content-Length"):
+                    try:
+                        total = int(response.headers["Content-Length"])
+                    except (TypeError, ValueError):
+                        pass
+                with open(part_path, "wb") as out:
+                    while True:
+                        chunk = response.read(_DOWNLOAD_CHUNK)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        done += len(chunk)
+                        pct = int(done * 100 / total) if total else None
+                        set_progress(done=done, total=total, pct=pct)
+                        if progress_cb:
+                            progress_cb(done, total or 0)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # urllib failed -> native curl fallback (same posture as
+            # post_install.ps1's curl-first model, mirrored for downloads).
+            set_progress(message="urllib failed (%s) - retrying with curl..." % str(exc)[:80])
+            try:
+                if os.path.exists(part_path):
+                    os.remove(part_path)
+            except OSError:
+                pass
+            _download_with_curl(asset["url"], part_path, timeout)
+
+        set_progress(phase="verifying", pct=None,
+                     message="Verifying download integrity...")
+        if not verify_sha256(part_path, expected):
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
+            set_progress(phase="failed", pct=None,
+                         message="Download corrupted (SHA256 mismatch) - deleted.")
+            raise UpdaterError("hash_mismatch",
+                               "SHA256 mismatch for %s - the download was deleted; "
+                               "the update was NOT applied." % asset["name"])
+        os.replace(part_path, final_path)
+    except UpdaterError:
+        raise
+    except Exception as exc:
+        try:
+            if os.path.exists(part_path):
+                os.remove(part_path)
+        except OSError:
+            pass
+        set_progress(phase="failed", message="Download failed.")
+        raise UpdaterError("download_failed", "Download failed: %s" % exc,
+                           cacheable=True)
+
+    set_progress(phase="downloaded", pct=100, message="Installer verified.")
+    return {"path": final_path, "sha256": expected,
+            "size": os.path.getsize(final_path), "tag": release.get("tag"),
+            "reused": False}
