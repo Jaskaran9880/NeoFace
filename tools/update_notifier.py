@@ -1,12 +1,18 @@
-"""NeoFace logon update notifier.
+"""NeoFace logon/hourly update notifier.
 
-Scheduled task: NeoFace-UpdateCheck (AtLogOn + 1 min delay, pythonw).
-Flow: wait for network -> reuse dashboard's update check -> Yes/No prompt
-only when a fresh result shows behind_count > 0 -> git pull --ff-only
-(origin allow-list re-verified) or open GitHub for non-git installs.
+Scheduled task: NeoFace-UpdateCheck (AtLogOn + 1 min delay, hourly
+repetition, pythonw). Flow: wait for network -> reuse dashboard's update
+check -> preference decides:
+  auto   - apply silently (download + SHA256 verify + elevated task for
+           installed builds; git pull for clones), at most once per remote
+           version via state["last_applied"]; never shows a window;
+  notify - the frozen Yes/No prompt below, at most once per 24h per SHA,
+           then git pull --ff-only (origin allow-list re-verified) or open
+           GitHub for non-git installs.
 
-Dedupe: .update_notify.json keeps declined_sha / last_notified(_sha) so a
-declined version never re-prompts and at most one prompt appears per 24h.
+Dedupe: .update_notify.json keeps declined_sha / last_notified(_sha) /
+last_applied so a declined version never re-prompts, at most one prompt
+appears per 24h, and an applied version is never applied twice.
 
 Fail-soft: every failure appends one line to update_notifier.log and exits 0.
 
@@ -32,6 +38,7 @@ _STATE_DEFAULTS = {
     "declined_sha": None,
     "last_notified": 0,
     "last_notified_sha": None,
+    "last_applied": None,       # remote sha (git) or release tag (installed)
 }
 
 
@@ -291,6 +298,103 @@ def apply_update(payload):
     return {"ok": False, "message": message}
 
 
+def _updater_module():
+    """Import face_unlock.updater; None (logged) on failure. Never raises."""
+    if REPO_ROOT not in sys.path:
+        sys.path.insert(0, REPO_ROOT)
+    try:
+        from face_unlock import updater
+        return updater
+    except Exception as exc:
+        _log("updater import failed: %r" % (exc,))
+        return None
+
+
+def _auto_apply(updater, payload, state):
+    """mode=auto: silent apply, at most once per remote version. Returns 0.
+
+    git installs reuse the dashboard's fresh check payload (never stale,
+    never behind_count<=0, declined versions stay declined); installed
+    builds compare GitHub releases and hand off to the pre-registered
+    NeoFace-UpdateApply task via updater.prepare_apply(interactive=False),
+    so no window and no UAC ever appear. Dedupe key: state["last_applied"]
+    (remote sha for git, release tag for installed).
+    """
+    if updater is None:
+        _log("auto: updater module unavailable - nothing applied")
+        return 0
+    try:
+        mode = updater.detect_install_mode()
+    except Exception as exc:
+        _log("auto: install mode detection failed: %r" % (exc,))
+        return 0
+
+    if mode == "git":
+        if not (isinstance(payload, dict) and payload.get("ok")
+                and not payload.get("stale") and not payload.get("error")):
+            _log("auto: no fresh solid check result - skipping")
+            return 0
+        behind = payload.get("behind_count")
+        remote_sha = payload.get("remote_sha")
+        if (not isinstance(behind, int) or isinstance(behind, bool)
+                or behind <= 0 or not remote_sha):
+            _log("auto: nothing to apply (behind=%r remote=%r)"
+                 % (behind, remote_sha))
+            return 0
+        if remote_sha == state.get("declined_sha"):
+            _log("auto: remote %s stays declined - skipping" % remote_sha)
+            return 0
+        if state.get("last_applied") == remote_sha:
+            return 0                    # already applied this exact version
+        _log("auto: applying git update (remote=%s behind=%d)"
+             % (remote_sha, behind))
+        result = apply_update(payload)
+        _log("auto: git apply ok=%s - %s"
+             % (result.get("ok"), result.get("message")))
+        if result.get("ok"):
+            state["last_applied"] = remote_sha
+            state["last_notified"] = time.time()
+            state["last_notified_sha"] = remote_sha
+            save_state(state)
+        return 0
+
+    # Installed build: cached/ETag release fetch first (cheap), then hand off.
+    try:
+        release = updater.fetch_latest_release()
+    except Exception as exc:
+        _log("auto: release fetch failed (%s) - skipping"
+             % (getattr(exc, "message", None) or exc,))
+        return 0
+    tag = (release or {}).get("tag")
+    if not tag:
+        _log("auto: no release tag available - skipping")
+        return 0
+    if state.get("last_applied") == tag:
+        return 0                         # already applied this release
+    local = updater.local_version()
+    if not updater.is_newer(tag, local.get("version")):
+        _log("auto: already at %s - nothing to apply" % local.get("version"))
+        return 0
+    try:
+        result = updater.prepare_apply(interactive=False)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if code in ("already_current", "in_progress"):
+            _log("auto: %s - %s" % (code, getattr(exc, "message", None) or exc))
+            return 0
+        _log("auto: apply failed (%s): %s"
+             % (code or "apply_failed", getattr(exc, "message", None) or exc))
+        return 0
+    if result.get("ok"):
+        state["last_applied"] = tag
+        state["last_notified"] = time.time()
+        state["last_notified_sha"] = None
+        save_state(state)
+    _log("auto: staged install apply (method=%s) - %s"
+         % (result.get("method"), result.get("message")))
+    return 0
+
+
 def _run_once(flags):
     """One check cycle (assumes no unexpected exception escapes)."""
     opts = _parse_flags(flags)
@@ -316,6 +420,21 @@ def _run_once(flags):
         return 0                       # no wait, no UI, no state change
 
     state = load_state()
+
+    # Preference-aware silent path: mode "auto" applies without any window
+    # (git pull, or verified installer + pre-registered task for installed
+    # builds) and dedupes per remote version via state["last_applied"].
+    # --test / --answer keep exercising the frozen prompt contract below.
+    if not opts["test"] and not opts["answer"]:
+        updater = _updater_module()
+        try:
+            prefs = updater.get_update_prefs() if updater is not None else {}
+        except Exception as exc:
+            _log("auto: prefs read failed (%r) - assuming notify" % (exc,))
+            prefs = {}
+        if prefs.get("mode") == "auto":
+            return _auto_apply(updater, payload, state)
+
     if not opts["test"] and not should_notify(payload, state):
         return 0                       # up to date / declined / prompted recently
 
