@@ -28,6 +28,7 @@ Security invariants (docs/SECURITY.md):
 
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -1040,3 +1041,94 @@ def restore_prefs_after_update():
         _write_prefs_config(mirror["mode"], bool(mirror.get("asked")))
     except Exception:
         pass
+
+
+# --- release notes -> safe HTML (the "what changed" modal) ----------------
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https://[^)\s]+)\)")
+_MD_BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+_MD_CODE_RE = re.compile(r"`([^`]+)`")
+
+
+def release_notes_html(body, max_chars=12000):
+    """Allowlist markdown -> HTML for the what-changed modal.
+
+    Only headings, bullet/numbered lists, bold, inline code, fenced code
+    blocks and https links survive; EVERYTHING is html.escaped first, so a
+    hostile release body cannot inject script (XSS-safe by construction -
+    raw markdown text is never handed to the DOM). Returns "" for empty input.
+    """
+    if not body:
+        return ""
+    text = str(body)[:max_chars]
+    out = []
+    in_code = False
+    list_stack = None   # "ul" | "ol" | None
+    para = []
+
+    def close_list():
+        nonlocal list_stack
+        if list_stack:
+            out.append("</%s>" % list_stack)
+            list_stack = None
+
+    def flush_para():
+        nonlocal para
+        if para:
+            out.append("<p>%s</p>" % " ".join(para))
+            para = []
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.lstrip().startswith("```"):
+            flush_para()
+            close_list()
+            out.append("</pre>" if in_code else "<pre><code>")
+            in_code = not in_code
+            continue
+        if in_code:
+            out.append(html.escape(raw))
+            continue
+        stripped = line.strip()
+        if not stripped:
+            flush_para()
+            close_list()
+            continue
+        heading = re.match(r"^(#{1,4})\s+(.*)$", stripped)
+        if heading:
+            flush_para()
+            close_list()
+            level = min(4, len(heading.group(1)) + 1)   # ## -> h3, keep h1 for the page
+            out.append("<h%d>%s</h%d>" % (level, html.escape(heading.group(2)), level))
+            continue
+        bullet = re.match(r"^[-*]\s+(.*)$", stripped)
+        numbered = re.match(r"^\d+[.)]\s+(.*)$", stripped)
+        if bullet or numbered:
+            flush_para()
+            wanted = "ul" if bullet else "ol"
+            if list_stack != wanted:
+                close_list()
+                out.append("<%s>" % wanted)
+                list_stack = wanted
+            item = html.escape((bullet or numbered).group(1))
+            item = _MD_BOLD_RE.sub(r"<strong>\1</strong>", item)
+            item = _MD_CODE_RE.sub(r"<code>\1</code>", item)
+            out.append("<li>%s</li>" % item)
+            continue
+        close_list()
+        para.append(html.escape(stripped))
+    flush_para()
+    close_list()
+    if in_code:
+        out.append("</pre>")
+
+    def _link(match):
+        # Escaping already happened, so match groups are safe text; only
+        # https URLs are allowed and links open with noopener.
+        return ('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>'
+                % (match.group(2), match.group(1)))
+
+    rendered = "\n".join(out)
+    rendered = _MD_LINK_RE.sub(_link, rendered)
+    rendered = _MD_BOLD_RE.sub(r"<strong>\1</strong>", rendered)
+    rendered = _MD_CODE_RE.sub(r"<code>\1</code>", rendered)
+    return rendered
