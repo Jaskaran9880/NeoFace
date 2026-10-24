@@ -894,3 +894,149 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --- update preference (auto | notify) ------------------------------------
+# Stored TWICE on purpose: config.toml [update] is the visible setting, and
+# the ProgramData mirror survives both an installer update (which used to
+# overwrite config.toml with ignoreversion - fixed via onlyifdoesntexist,
+# but installs predating that fix still clobber) and a full uninstall.
+# Reads are newest-wins between the two.
+
+CONFIG_FILE = os.path.join(ROOT, "config.toml")
+_PREFS_MODES = ("auto", "notify")
+
+_UPDATE_SECTION_RE = re.compile(
+    r"(?ms)^\[update\][^\[]*")
+
+
+def _read_prefs_mirror():
+    """update_prefs.json -> dict or {} (never raises)."""
+    try:
+        with open(PREFS_MIRROR, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _write_prefs_mirror(data):
+    """Atomic mirror write; returns False on any OSError."""
+    return _write_json_atomic(PREFS_MIRROR, data)
+
+
+def _read_prefs_config():
+    """[update] section of config.toml -> {"mode","asked","mtime"} or {}."""
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    match = _UPDATE_SECTION_RE.search(text)
+    if not match:
+        return {}
+    out = {}
+    for line in match.group(0).splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" not in line:
+            continue
+        key, val = (part.strip() for part in line.split("=", 1))
+        val = val.strip().strip('"').strip("'")
+        if key == "mode" and val in _PREFS_MODES:
+            out["mode"] = val
+        elif key == "asked":
+            out["asked"] = val.lower() in ("true", "1", "yes")
+    if "mode" in out or "asked" in out:
+        try:
+            out["mtime"] = int(os.path.getmtime(CONFIG_FILE))
+        except OSError:
+            out["mtime"] = 0
+        return out
+    return {}
+
+
+def _write_prefs_config(mode, asked):
+    """Surgically upsert the [update] section; the rest of config.toml is
+    never rewritten, so no other key can be dropped. Returns False on OSError."""
+    block = ('[update]\nmode = "%s"\nasked = %s\n'
+             % (mode, "true" if asked else "false"))
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            text = f.read()
+        if _UPDATE_SECTION_RE.search(text):
+            text = _UPDATE_SECTION_RE.sub(lambda m: block.rstrip(), text, count=1)
+        else:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += ("\n" if text.strip() else "") + block
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, CONFIG_FILE)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(CONFIG_FILE + ".tmp"):
+                os.remove(CONFIG_FILE + ".tmp")
+        except OSError:
+            pass
+        return False
+
+
+def get_update_prefs():
+    """{"mode": "auto"|"notify"|None, "asked": bool, "last_shown_notes_version"}.
+
+    mode=None + asked=False is the "never asked" state the dashboard turns
+    into the one-time prompt. Newest writer wins between mirror and
+    config.toml, which is what keeps the choice across an update that
+    overwrote config.toml (mirror stays, gets re-seeded on next save).
+    """
+    mirror = _read_prefs_mirror()
+    conf = _read_prefs_config()
+    newer = mirror
+    if conf and (conf.get("mtime") or 0) > (mirror.get("updated_at") or 0):
+        newer = conf
+    mode = newer.get("mode") if newer.get("mode") in _PREFS_MODES else None
+    asked = bool(newer.get("asked")) if mode else False
+    return {"mode": mode, "asked": asked,
+            "last_shown_notes_version": mirror.get("last_shown_notes_version")}
+
+
+def set_update_prefs(mode, asked=True):
+    """Persist the choice to both stores; raises UpdaterError('bad_mode')."""
+    if mode not in _PREFS_MODES:
+        raise UpdaterError("bad_mode",
+                           "mode must be one of %s, got %r" % (_PREFS_MODES, mode))
+    mirror = _read_prefs_mirror()
+    mirror.update({"mode": mode, "asked": bool(asked),
+                   "updated_at": int(time.time())})
+    _write_prefs_mirror(mirror)
+    _write_prefs_config(mode, asked)
+    return get_update_prefs()
+
+
+def set_notes_shown(version):
+    """Record that the what-changed notes for <version> were displayed once."""
+    mirror = _read_prefs_mirror()
+    mirror.update({"last_shown_notes_version": version,
+                   "updated_at": int(time.time())})
+    _write_prefs_mirror(mirror)
+    return get_update_prefs()
+
+
+def restore_prefs_after_update():
+    """Re-seed config.toml's [update] from the mirror if the installer
+    clobbered it - the "first run after update must not re-prompt" guarantee.
+    Fail-soft: any problem here is invisible by design."""
+    try:
+        mirror = _read_prefs_mirror()
+        if not mirror.get("mode") or not mirror.get("asked"):
+            return
+        conf = _read_prefs_config()
+        if conf.get("mode") == mirror.get("mode") and conf.get("asked"):
+            return   # config still intact - nothing to restore
+        _write_prefs_config(mirror["mode"], bool(mirror.get("asked")))
+    except Exception:
+        pass
