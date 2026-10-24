@@ -1082,7 +1082,7 @@ def release_notes_html(body, max_chars=12000):
         if line.lstrip().startswith("```"):
             flush_para()
             close_list()
-            out.append("</pre>" if in_code else "<pre><code>")
+            out.append("</code></pre>" if in_code else "<pre><code>")
             in_code = not in_code
             continue
         if in_code:
@@ -1119,7 +1119,7 @@ def release_notes_html(body, max_chars=12000):
     flush_para()
     close_list()
     if in_code:
-        out.append("</pre>")
+        out.append("</code></pre>")
 
     def _link(match):
         # Escaping already happened, so match groups are safe text; only
