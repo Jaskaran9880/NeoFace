@@ -7,10 +7,11 @@
 By default this suite runs READ-ONLY checks only (health, status, photos GET,
 settings GET, logs GET, read-only troubleshoot [15]-[20], update-check 27-32,
 static XSS guard, the scheduled-task read-only query [40], the in-process
-unit tests [34]-[35], the update-notifier unit tests [41], and the camera
-settle/warmup unit tests [44]-[46]).
+unit tests [34]-[35], the update-notifier unit tests [41], the camera
+settle/warmup unit tests [44]-[46], the updater unit tests [47]-[49] and the
+update-cadence checks [50]).
 
-Tests [5] [6] [7] [8] [10] [11] [12] [13] [14] [23] [24] [25] [26] have SIDE
+Tests [5] [6] [7] [8] [10] [11] [12] [13] [14] [23] [24] [25] [26] [27] have SIDE
 EFFECTS on the live install (config, camera, model downloads, daemon, logs,
 photos) and are SKIPPED unless the env flag is set:
 
@@ -38,6 +39,10 @@ What a destructive run touches (do NOT enable casually):
     [24] POST /api/photos/upload  - uploads a test photo
     [25] DELETE /api/photos/...   - deletes a photo
     [26] POST /api/photos/clear   - DELETES THE ENTIRE PHOTO GALLERY
+    [27] POST /api/update/apply   - stages a fake "installing"
+                                apply_state.json (backed up + RESTORED) to
+                                assert the 409 double-apply guard; it never
+                                starts a real update
 
 Skipped tests are reported as SKIP in the summary table.
 ================================================================================
@@ -1111,7 +1116,8 @@ _UN_STATE_PATH = os.path.join(_REPO_ROOT, ".update_notify.json")
 _UN_CONSTANTS = ("REPO_ROOT", "STATE_FILE", "LOG_FILE", "NOTIFY_MIN_INTERVAL_S")
 _UN_FUNCTIONS = ("load_state", "save_state", "should_notify", "show_prompt",
                  "apply_update", "run_once", "main")
-_UN_DEFAULTS = {"declined_sha": None, "last_notified": 0, "last_notified_sha": None}
+_UN_DEFAULTS = {"declined_sha": None, "last_notified": 0, "last_notified_sha": None,
+                "last_applied": None}
 
 
 def _state_file_snapshot(path):
@@ -1255,7 +1261,8 @@ else:
                               "nb_notifier_state_test.json")
     _saved = {"declined_sha": "abc123declined",
               "last_notified": 1790000000,
-              "last_notified_sha": "0123456789abcdef0123456789abcdef01234567"}
+              "last_notified_sha": "0123456789abcdef0123456789abcdef01234567",
+              "last_applied": "feedfacecafebeef0123456789abcdef01234567"}
     try:
         if (not _REAL_STATE
                 or os.path.abspath(_REAL_STATE) == os.path.abspath(_TMP_STATE)):
@@ -1891,6 +1898,1120 @@ else:
     log_result("unit/mode+version", "UNIT", "-", "FAIL" if _bad else "PASS",
                "; ".join(_bad)[:250] if _bad else
                "repo=git+describe, bare root=installed, VERSION file=version_file")
+
+# ====================================================================
+#  48. UNIT TESTS - apply pipeline (face_unlock/updater.py + auto path)
+#  Read-only: every engine is monkeypatched in-process. No network,
+#  no scheduled-task IO, no ProgramData write and no elevation can
+#  happen here - download_latest runs against a fake urlopen and a
+#  temp dest dir, prepare_apply runs against fake mode/state/fetch/
+#  task functions, and the notifier's silent auto path runs against
+#  a fake updater plus a temp state file.
+# ====================================================================
+print("\n[48] unit: apply pipeline (face_unlock/updater.py + auto path)")
+
+import hashlib as _hashlib_t48          # stdlib, local import - keeps the header untouched
+import urllib.request as _urlreq_t48    # stdlib - patched (and restored) around download_latest
+
+# -- 48a. verify_sha256 matrix -------------------------------------------
+print("  [48a] verify_sha256 matrix (match / mismatch / missing / empty / case)")
+_bad = []
+if _up is None:
+    _bad.append("skipped - updater import failed: %s" % str(_up_import_err)[:150])
+else:
+    _td = tempfile.mkdtemp(prefix="nf-sha-test-")
+    try:
+        _f = os.path.join(_td, "payload.bin")
+        _payload = b"neoface-verify-sha256-matrix"
+        with open(_f, "wb") as _h:
+            _h.write(_payload)
+        _good = _hashlib_t48.sha256(_payload).hexdigest()
+        if _up.verify_sha256(_f, _good) is not True:
+            _bad.append("correct hash did not return True")
+        if _up.verify_sha256(_f, "0" * 64) is not False:
+            _bad.append("wrong hash did not return False")
+        if _up.verify_sha256(os.path.join(_td, "missing.bin"), _good) is not False:
+            _bad.append("missing file did not return False")
+        if _up.verify_sha256(_f, "") is not False:
+            _bad.append("empty expected did not return False")
+        if _up.verify_sha256(_f, None) is not False:
+            _bad.append("None expected did not return False")
+        if _up.verify_sha256(_f, "  %s \n" % _good.upper()) is not True:
+            _bad.append("uppercase/whitespace expected did not return True "
+                        "(case-insensitive constant-time compare)")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, _unit_err))
+    finally:
+        _shutil_tmp.rmtree(_td, ignore_errors=True)
+log_result("unit/verify_sha256", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "match/mismatch/missing/empty correct; case+whitespace tolerated")
+
+# -- 48b. download_latest: verified staging (.part -> os.replace) ---------
+print("  [48b] download_latest staging (fake urlopen, temp dest dir)")
+_bad = []
+if _up is None:
+    _bad.append("skipped - updater import failed: %s" % str(_up_import_err)[:150])
+else:
+    _urlopen_orig = _urlreq_t48.urlopen
+    _dl_calls = []
+    _td = tempfile.mkdtemp(prefix="nf-dl-test-")
+    try:
+        _payload = b"NEOFACE-SETUP-FAKE-BYTES-" * 64
+        _sha = _hashlib_t48.sha256(_payload).hexdigest()
+        _name = "NeoFace-Setup-9.9.9.exe"
+        _release = {"tag": "v9.9.9", "version": "9.9.9", "sha256": _sha,
+                    "assets": [{"name": _name,
+                                "url": "https://github.com/Jaskaran9880/NeoFace/"
+                                       "releases/download/v9.9.9/" + _name,
+                                "size": len(_payload)}]}
+        _final = os.path.join(_td, _name)
+
+        class _FakeResp(object):
+            """Minimal urllib response: context manager + headers + read(n).
+
+            Deliberately never raises URLError/OSError/ValueError - those
+            would divert download_latest into its real curl fallback.
+            """
+            def __init__(self, data, headers=None):
+                self._data = data
+                self._pos = 0
+                self.headers = dict(headers or {})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+            def read(self, n):
+                _chunk = self._data[self._pos:self._pos + n]
+                self._pos += len(_chunk)
+                return _chunk
+
+        def _fake_urlopen(req, timeout=None, **_kw):
+            _dl_calls.append(getattr(req, "full_url", "?"))
+            return _FakeResp(_payload, {"Content-Length": str(len(_payload))})
+
+        def _bomb_urlopen(*_a, **_kw):
+            _dl_calls.append("BOMB")
+            raise AssertionError("network touched on a path that must not fetch")
+
+        _urlreq_t48.urlopen = _fake_urlopen
+
+        # (1) wrong SHA256 -> hash_mismatch, .part deleted, exe never exists
+        try:
+            _up.download_latest(dict(_release, sha256="f" * 64), dest_dir=_td)
+            _bad.append("hash_mismatch: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "hash_mismatch":
+                _bad.append("hash_mismatch: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("hash_mismatch: %s: %s" % (type(_e).__name__, str(_e)[:80]))
+        if os.path.exists(_final):
+            _bad.append("hash_mismatch: final exe exists without verification")
+        if os.path.exists(_final + ".part"):
+            _bad.append("hash_mismatch: .part not deleted")
+
+        # (2) correct SHA256 -> atomically finalized, no .part left behind
+        try:
+            _res = _up.download_latest(_release, dest_dir=_td)
+        except Exception as _e:
+            _bad.append("match: raised %s: %s" % (type(_e).__name__, str(_e)[:100]))
+            _res = None
+        if not isinstance(_res, dict) or _res.get("reused") is not False:
+            _bad.append("match: result=%r" % (_res,))
+        if not os.path.isfile(_final):
+            _bad.append("match: final exe missing after download")
+        elif not _up.verify_sha256(_final, _sha):
+            _bad.append("match: final exe does not hash-match")
+        if os.path.exists(_final + ".part"):
+            _bad.append("match: .part left behind (atomic replace did not run)")
+
+        # (3) reuse: a verified file short-circuits BEFORE any network call
+        _before = len(_dl_calls)
+        _urlreq_t48.urlopen = _bomb_urlopen
+        try:
+            _res = _up.download_latest(_release, dest_dir=_td)
+        except Exception as _e:
+            _bad.append("reuse: raised %s: %s" % (type(_e).__name__, str(_e)[:100]))
+            _res = None
+        if _dl_calls[_before:]:
+            _bad.append("reuse: urlopen was called on the reuse path")
+        if not isinstance(_res, dict) or _res.get("reused") is not True:
+            _bad.append("reuse: result=%r" % (_res,))
+        elif _res.get("path") != _final:
+            _bad.append("reuse: path=%r" % _res.get("path"))
+
+        # (4) no SHA256 published -> refused BEFORE any network call
+        #     (the bomb stays installed from here on: cases 4-5 must not fetch)
+        _before = len(_dl_calls)
+        try:
+            _up.download_latest(dict(_release, sha256=None), dest_dir=_td)
+            _bad.append("no_hash: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "no_hash":
+                _bad.append("no_hash: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("no_hash: %s: %s" % (type(_e).__name__, str(_e)[:80]))
+        if _dl_calls[_before:]:
+            _bad.append("no_hash: network touched before the refusal")
+
+        # (5) foreign-host asset -> no_asset BEFORE any network call
+        _foreign = dict(_release, assets=[{"name": _name,
+                                           "url": "https://evil.example.com/" + _name,
+                                           "size": len(_payload)}])
+        _before = len(_dl_calls)
+        try:
+            _up.download_latest(_foreign, dest_dir=_td)
+            _bad.append("no_asset: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "no_asset":
+                _bad.append("no_asset: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("no_asset: %s: %s" % (type(_e).__name__, str(_e)[:80]))
+        if _dl_calls[_before:]:
+            _bad.append("no_asset: network touched before the refusal")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, str(_unit_err)[:160]))
+    finally:
+        _urlreq_t48.urlopen = _urlopen_orig
+        _shutil_tmp.rmtree(_td, ignore_errors=True)
+log_result("unit/download staging", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "mismatch never finalizes + deletes .part, match replaces atomically, "
+           "reuse skips the network, no_hash/no_asset refuse pre-flight")
+
+# -- 48c. prepare_apply decision gates ------------------------------------
+print("  [48c] prepare_apply gates (git dispatch / in_progress / already_current /")
+print("        task_missing staging / silent task handoff / runas / staging failure)")
+_bad = []
+if _up is None:
+    _bad.append("skipped - updater import failed: %s" % str(_up_import_err)[:150])
+else:
+    _patch_names = ("detect_install_mode", "read_apply_state", "fetch_latest_release",
+                    "local_version", "download_latest", "_task_exists",
+                    "_start_apply_task", "_runas_apply_script", "apply_via_git",
+                    "write_apply_state", "_write_json_atomic", "PENDING_FILE")
+    _saved = {name: getattr(_up, name) for name in _patch_names}
+    _calls = {"fetch": 0, "download": 0, "git": 0, "start_task": 0,
+              "runas": 0, "write_state": [], "runas_relaunch": []}
+    _td = tempfile.mkdtemp(prefix="nf-prepare-test-")
+    try:
+        _up.PENDING_FILE = os.path.join(_td, "pending.json")
+
+        def _f_fetch(force=False, timeout=10):
+            _calls["fetch"] += 1
+            return {"tag": "v9.9.9", "version": "9.9.9", "body": "",
+                    "assets": [], "sha256": "a" * 64}
+
+        def _f_download(release=None, progress_cb=None, **_kw):
+            _calls["download"] += 1
+            return {"path": os.path.join(_td, "NeoFace-Setup-9.9.9.exe"),
+                    "sha256": "a" * 64, "size": 12,
+                    "tag": (release or {}).get("tag"), "reused": False}
+
+        def _f_git(progress_cb=None):
+            _calls["git"] += 1
+            return {"ok": True, "method": "git", "message": "pulled"}
+
+        def _f_start():
+            _calls["start_task"] += 1
+            return True
+
+        def _f_runas(relaunch):
+            _calls["runas"] += 1
+            _calls["runas_relaunch"].append(bool(relaunch))
+            return {"ok": True, "method": "runas"}
+
+        def _f_write_state(state, **_kw):
+            _calls["write_state"].append(state)
+            return {}
+
+        def _reset(*names):
+            for _n in names:
+                _calls[_n] = [] if isinstance(_calls.get(_n), list) else 0
+
+        _state_idle = {"state": "idle", "pct": None, "message": "", "version": None,
+                       "exit_code": None, "rolled_back": False, "updated_at": 0}
+
+        # A. git mode -> straight to apply_via_git (never fetches a release)
+        _up.detect_install_mode = lambda root=None: "git"
+        _up.apply_via_git = _f_git
+        _up.fetch_latest_release = _f_fetch
+        _reset("fetch", "git")
+        try:
+            _res = _up.prepare_apply()
+            if _res != {"ok": True, "method": "git", "message": "pulled"}:
+                _bad.append("git: result=%r" % (_res,))
+        except Exception as _e:
+            _bad.append("git: raised %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if _calls["git"] != 1:
+            _bad.append("git: apply_via_git called %d times" % _calls["git"])
+        if _calls["fetch"] != 0:
+            _bad.append("git: fetched a release anyway (dispatch should be enough)")
+
+        # B. fresh in-progress state -> refused BEFORE any network
+        _up.detect_install_mode = lambda root=None: "installed"
+        _up.read_apply_state = lambda: dict(
+            _state_idle, state="downloading", updated_at=time.time())
+        _reset("fetch")
+        try:
+            _up.prepare_apply()
+            _bad.append("in_progress: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "in_progress":
+                _bad.append("in_progress: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("in_progress: %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if _calls["fetch"] != 0:
+            _bad.append("in_progress: network fetch happened before the refusal")
+
+        # C. already on the release tag -> already_current, nothing downloaded
+        _up.read_apply_state = lambda: dict(_state_idle)
+        _up.fetch_latest_release = _f_fetch        # returns v9.9.9
+        _up.local_version = lambda root=None: {"version": "9.9.9", "sha": None,
+                                               "source": "git"}
+        _reset("download")
+        try:
+            _up.prepare_apply()
+            _bad.append("already_current: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "already_current":
+                _bad.append("already_current: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("already_current: %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if _calls["download"] != 0:
+            _bad.append("already_current: downloaded anyway")
+        if os.path.exists(_up.PENDING_FILE):
+            _bad.append("already_current: staged a pending update anyway")
+
+        # D. newer release, task missing, non-interactive -> task_missing,
+        #    but only AFTER staging pending.json (installer-side handoff)
+        _up.local_version = lambda root=None: {"version": "0.5.0", "sha": None,
+                                               "source": "version_file"}
+        _up.download_latest = _f_download
+        _up._task_exists = lambda name: False
+        _up._start_apply_task = _f_start
+        _up._runas_apply_script = _f_runas
+        _up.write_apply_state = _f_write_state
+        if os.path.exists(_up.PENDING_FILE):
+            os.remove(_up.PENDING_FILE)
+        _reset("download", "start_task", "runas")
+        try:
+            _up.prepare_apply(interactive=False)
+            _bad.append("task_missing: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "task_missing":
+                _bad.append("task_missing: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("task_missing: %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if not os.path.exists(_up.PENDING_FILE):
+            _bad.append("task_missing: pending.json was not staged first")
+        else:
+            try:
+                with open(_up.PENDING_FILE, "r", encoding="utf-8") as _h:
+                    _pend = json.load(_h)
+                if not all(_k in _pend for _k in ("setup", "sha256", "tag",
+                                                  "relaunch", "staged_at")):
+                    _bad.append("task_missing: pending.json keys=%r" % sorted(_pend))
+            except Exception as _e:
+                _bad.append("task_missing: pending.json unreadable: %s" % str(_e)[:80])
+        if _calls["start_task"] != 0 or _calls["runas"] != 0:
+            _bad.append("task_missing: elevated handoff ran anyway (start=%d runas=%d)"
+                        % (_calls["start_task"], _calls["runas"]))
+
+        # E. task registered -> silent handoff, state marked installing, no UAC
+        _up._task_exists = lambda name: True
+        if os.path.exists(_up.PENDING_FILE):
+            os.remove(_up.PENDING_FILE)
+        _reset("start_task", "runas", "write_state")
+        try:
+            _res = _up.prepare_apply(interactive=False)
+            if not (isinstance(_res, dict) and _res.get("ok") is True
+                    and _res.get("method") == "task" and _res.get("tag") == "v9.9.9"):
+                _bad.append("task: result=%r" % (_res,))
+        except Exception as _e:
+            _bad.append("task: raised %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if _calls["start_task"] != 1:
+            _bad.append("task: _start_apply_task called %d times" % _calls["start_task"])
+        if not os.path.exists(_up.PENDING_FILE):
+            _bad.append("task: pending.json not staged")
+        if "installing" not in _calls["write_state"]:
+            _bad.append("task: apply state never marked installing (%r)"
+                        % (_calls["write_state"],))
+        if _calls["runas"] != 0:
+            _bad.append("task: UAC fallback ran even though the task exists")
+
+        # F. task missing but interactive -> UAC runas fallback, relaunch kept
+        _up._task_exists = lambda name: False
+        _reset("runas", "runas_relaunch")
+        try:
+            _res = _up.prepare_apply(interactive=True, relaunch_dashboard=True)
+            if not (isinstance(_res, dict) and _res.get("ok") is True
+                    and _res.get("method") == "runas" and _res.get("tag") == "v9.9.9"):
+                _bad.append("runas: result=%r" % (_res,))
+        except Exception as _e:
+            _bad.append("runas: raised %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if _calls["runas"] != 1:
+            _bad.append("runas: _runas_apply_script called %d times" % _calls["runas"])
+        if _calls["runas_relaunch"] != [True]:
+            _bad.append("runas: relaunch flag not forwarded (%r)"
+                        % (_calls["runas_relaunch"],))
+
+        # G. staging failure -> apply_failed, never reaches any elevation
+        if os.path.exists(_up.PENDING_FILE):
+            os.remove(_up.PENDING_FILE)
+        _up._write_json_atomic = lambda path, data: False
+        _reset("start_task", "runas")
+        try:
+            _up.prepare_apply(interactive=True)
+            _bad.append("staging: no UpdaterError raised")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "apply_failed":
+                _bad.append("staging: code=%r" % getattr(_e, "code", None))
+        except Exception as _e:
+            _bad.append("staging: %s: %s" % (type(_e).__name__, str(_e)[:100]))
+        if os.path.exists(_up.PENDING_FILE):
+            _bad.append("staging: pending.json written despite the failure")
+        if _calls["start_task"] != 0 or _calls["runas"] != 0:
+            _bad.append("staging: elevated handoff ran despite staging failure")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, str(_unit_err)[:160]))
+    finally:
+        for _name, _value in _saved.items():
+            setattr(_up, _name, _value)
+        _shutil_tmp.rmtree(_td, ignore_errors=True)
+log_result("unit/prepare_apply gates", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "git dispatch / in_progress-before-fetch / already_current / "
+           "task_missing-stages-first / silent task handoff / runas relaunch / "
+           "staging failure stops elevation")
+
+# -- 48d. notifier silent auto path (mode=auto) ---------------------------
+print("  [48d] notifier _auto_apply matrix (git dedupe + installed handoff)")
+_bad = []
+_rcs = []
+if _un is None:
+    _bad.append("skipped - update_notifier import failed: %s" % str(_un_import_err)[:150])
+else:
+    _td = tempfile.mkdtemp(prefix="nf-auto-test-")
+    _logs = []
+    _apply_payloads = []
+    _un_saved = {"_log": _un._log, "STATE_FILE": _un.STATE_FILE,
+                 "apply_update": _un.apply_update}
+    try:
+        _un._log = lambda line: _logs.append(line)
+        _un.STATE_FILE = os.path.join(_td, "state.json")
+
+        def _f_apply_update(payload):
+            _apply_payloads.append(payload)
+            return {"ok": True, "message": "fake git apply"}
+
+        _un.apply_update = _f_apply_update
+
+        class _FakeUE(Exception):
+            """UpdaterError-shaped failure for the notifier contract."""
+            def __init__(self, code, message):
+                super().__init__(message)
+                self.code = code
+                self.message = message
+
+        class _FakeUp(object):
+            """Just enough updater surface for _auto_apply."""
+            def __init__(self, mode="installed", tag="v9.9.9", local="0.5.0",
+                         newer=True, fetch_err=None, no_tag=False,
+                         prepare_err=None):
+                self._mode = mode
+                self.tag = tag
+                self.local = local
+                self.newer = newer
+                self.fetch_err = fetch_err
+                self.no_tag = no_tag
+                self.prepare_err = prepare_err
+                self.prepare_calls = 0
+
+            def detect_install_mode(self):
+                return self._mode
+
+            def fetch_latest_release(self):
+                if self.fetch_err is not None:
+                    raise self.fetch_err
+                return {} if self.no_tag else {"tag": self.tag,
+                                               "version": self.tag.lstrip("v")}
+
+            def local_version(self):
+                return {"version": self.local, "sha": None, "source": "test"}
+
+            def is_newer(self, tag, ver):
+                return self.newer
+
+            def prepare_apply(self, interactive=True, relaunch_dashboard=False,
+                              progress_cb=None):
+                self.prepare_calls += 1
+                if self.prepare_err is not None:
+                    raise self.prepare_err
+                return {"ok": True, "method": "task", "message": "staged"}
+
+        def _run(label, updater, payload, state):
+            _rc = _un._auto_apply(updater, payload, state)
+            _rcs.append((label, _rc))
+            if _rc != 0:
+                _bad.append("%s returned %r (auto path must always return 0)"
+                            % (label, _rc))
+
+        def _persisted():
+            try:
+                with open(_un.STATE_FILE, "r", encoding="utf-8") as _h:
+                    return json.load(_h)
+            except Exception as _e:
+                _bad.append("state file unreadable: %s" % str(_e)[:80])
+                return {}
+
+        _state0 = dict(_un._STATE_DEFAULTS)
+        _solid = {"ok": True, "stale": False, "error": None, "behind_count": 3,
+                  "remote_sha": "remote-sha-1"}
+        _up_git = _FakeUp(mode="git")
+
+        # (0) no updater module -> quiet 0
+        _run("no-updater", None, dict(_solid), dict(_state0))
+
+        # (1) git + solid fresh payload -> applies once, persists last_applied
+        _n0 = len(_apply_payloads)
+        _state = dict(_state0)
+        _run("git-apply", _up_git, dict(_solid), _state)
+        if len(_apply_payloads) != _n0 + 1:
+            _bad.append("git-apply: apply_update not called exactly once")
+        if _state.get("last_applied") != "remote-sha-1":
+            _bad.append("git-apply: last_applied=%r" % _state.get("last_applied"))
+        if _persisted().get("last_applied") != "remote-sha-1":
+            _bad.append("git-apply: not persisted to the state file")
+
+        # (2) same remote already applied -> dedupe, no second apply
+        _n0 = len(_apply_payloads)
+        _run("git-dedupe", _up_git, dict(_solid), _state)
+        if len(_apply_payloads) != _n0:
+            _bad.append("git-dedupe: apply_update ran again for the same sha")
+
+        # (3) stale / error / not-ok / behind<=0 / bool-behind / no remote -> never
+        for _label, _pl in (
+                ("stale", dict(_solid, stale=True)),
+                ("error", dict(_solid, error="offline")),
+                ("not-ok", dict(_solid, ok=False)),
+                ("behind-0", dict(_solid, behind_count=0)),
+                ("behind-bool", dict(_solid, behind_count=True)),
+                ("no-remote", dict(_solid, remote_sha=None))):
+            _n0 = len(_apply_payloads)
+            _run("git-" + _label, _up_git, _pl, dict(_state0))
+            if len(_apply_payloads) != _n0:
+                _bad.append("git-%s: applied anyway" % _label)
+
+        # (4) declined version stays declined
+        _n0 = len(_apply_payloads)
+        _run("git-declined", _up_git, dict(_solid),
+             dict(_state0, declined_sha="remote-sha-1"))
+        if len(_apply_payloads) != _n0:
+            _bad.append("git-declined: applied a declined sha anyway")
+
+        # (5) installed + release fetch fails -> skip, no crash
+        _up_ins = _FakeUp(fetch_err=RuntimeError("offline"))
+        _run("ins-fetch-fail", _up_ins, None, dict(_state0))
+        if _up_ins.prepare_calls != 0:
+            _bad.append("ins-fetch-fail: prepare_apply was attempted")
+
+        # (6) installed + no tag / already applied / not newer -> skip
+        for _label, _kw in (("no-tag", {"no_tag": True}),
+                            ("dedupe", {}),
+                            ("not-newer", {"newer": False})):
+            _up2 = _FakeUp(**_kw)
+            _st = dict(_state0)
+            if _label == "dedupe":
+                _st["last_applied"] = _up2.tag
+            _run("ins-" + _label, _up2, None, _st)
+            if _up2.prepare_calls != 0:
+                _bad.append("ins-%s: prepare_apply was attempted" % _label)
+
+        # (7) installed + already_current / in_progress -> fail-soft info logs
+        for _code in ("already_current", "in_progress"):
+            _up3 = _FakeUp(prepare_err=_FakeUE(_code, "simulated %s" % _code))
+            _run("ins-" + _code, _up3, None, dict(_state0))
+            if not any(_code in _line for _line in _logs):
+                _bad.append("ins-%s: info log missing" % _code)
+
+        # (8) installed + unexpected failure -> still 0, logged as a failure
+        _logs[:] = []
+        _up4 = _FakeUp(prepare_err=_FakeUE("uac_declined", "user declined"))
+        _run("ins-uac", _up4, None, dict(_state0))
+        if not any("apply failed" in _line for _line in _logs):
+            _bad.append("ins-uac: failure log missing")
+
+        # (9) installed + staged ok -> last_applied = tag, persisted, logged
+        _logs[:] = []
+        _up5 = _FakeUp()
+        _state = dict(_state0)
+        _run("ins-ok", _up5, None, _state)
+        if _state.get("last_applied") != "v9.9.9":
+            _bad.append("ins-ok: last_applied=%r" % _state.get("last_applied"))
+        if _persisted().get("last_applied") != "v9.9.9":
+            _bad.append("ins-ok: not persisted to the state file")
+        if _up5.prepare_calls != 1:
+            _bad.append("ins-ok: prepare_apply called %d times" % _up5.prepare_calls)
+        if not any("staged install apply" in _line for _line in _logs):
+            _bad.append("ins-ok: success log missing")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, str(_unit_err)[:160]))
+    finally:
+        for _name, _value in _un_saved.items():
+            setattr(_un, _name, _value)
+        _shutil_tmp.rmtree(_td, ignore_errors=True)
+log_result("unit/auto_apply", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "%d cases: git dedupe+guards, installed fetch/tag/version gates, "
+           "already_current/in_progress fail-soft, ok persists last_applied; "
+           "every path returns 0" % len(_rcs))
+
+# ====================================================================
+#  49. UNIT + LIVE - update preferences, what-changed renderer, card API
+#  49a/49b run against TEMP stores (the live ProgramData mirror and the
+#  repo config.toml are snapshotted and must stay byte-identical). 49c is
+#  read-only against the live dashboard; the staged-409 apply check sits
+#  behind destructive() and restores apply_state.json afterwards.
+# ====================================================================
+print("\n[49] unit: update prefs + release-notes renderer (+ live card API)")
+
+# -- 49a. preference store round-trip (temp mirror + temp config) ----------
+print("  [49a] prefs round-trip (temp stores, newest-wins both ways)")
+_bad = []
+if _up is None:
+    _bad.append("skipped - updater import failed: %s" % str(_up_import_err)[:150])
+else:
+    _real_before = (_state_file_snapshot(_up.PREFS_MIRROR),
+                    _state_file_snapshot(_up.CONFIG_FILE))
+    _td = tempfile.mkdtemp(prefix="nf-prefs-test-")
+    _saved = {"PREFS_MIRROR": _up.PREFS_MIRROR, "CONFIG_FILE": _up.CONFIG_FILE}
+    try:
+        _up.PREFS_MIRROR = os.path.join(_td, "update_prefs.json")
+        _up.CONFIG_FILE = os.path.join(_td, "config.toml")
+        with open(_up.CONFIG_FILE, "w", encoding="utf-8") as _f:
+            _f.write("[face]\nthreshold = 0.42\n")   # unrelated section must survive
+
+        # (1) fresh stores == the one-time-prompt "never asked" state
+        _p = _up.get_update_prefs()
+        if _p != {"mode": None, "asked": False, "last_shown_notes_version": None}:
+            _bad.append("fresh state -> %r" % (_p,))
+
+        # (2) set_update_prefs writes BOTH stores surgically
+        _p = _up.set_update_prefs("auto")
+        if _p.get("mode") != "auto" or _p.get("asked") is not True:
+            _bad.append("set(auto) -> %r" % (_p,))
+        with open(_up.PREFS_MIRROR, "r", encoding="utf-8") as _f:
+            _mirror = json.load(_f)
+        if _mirror.get("mode") != "auto" or _mirror.get("asked") is not True \
+                or not isinstance(_mirror.get("updated_at"), int):
+            _bad.append("mirror -> %r" % (_mirror,))
+        with open(_up.CONFIG_FILE, "r", encoding="utf-8") as _f:
+            _conf = _f.read()
+        for _frag in ("[update]", 'mode = "auto"', "asked = true"):
+            if _frag not in _conf:
+                _bad.append("config missing %r" % _frag)
+        if "[face]" not in _conf or "threshold = 0.42" not in _conf:
+            _bad.append("config upsert clobbered the unrelated [face] section")
+
+        # (3) newest-wins: a NEWER config beats the mirror
+        _t0 = _mirror["updated_at"]
+        _up._write_prefs_config("notify", True)
+        os.utime(_up.CONFIG_FILE, (_t0 + 10, _t0 + 10))
+        _p = _up.get_update_prefs()
+        if _p.get("mode") != "notify":
+            _bad.append("newer config should win -> %r" % (_p,))
+
+        # (4) newest-wins: a NEWER mirror beats the config again
+        _mirror["updated_at"] = _t0 + 20
+        with open(_up.PREFS_MIRROR, "w", encoding="utf-8") as _f:
+            json.dump(_mirror, _f)
+        _p = _up.get_update_prefs()
+        if _p.get("mode") != "auto":
+            _bad.append("newer mirror should win -> %r" % (_p,))
+
+        # (5) installer clobber: [update] wiped from config -> mirror survives
+        with open(_up.CONFIG_FILE, "w", encoding="utf-8") as _f:
+            _f.write("[face]\nthreshold = 0.42\n")
+        _p = _up.get_update_prefs()
+        if _p.get("mode") != "auto" or _p.get("asked") is not True:
+            _bad.append("config clobber lost the choice -> %r" % (_p,))
+
+        # (6) restore_prefs_after_update re-seeds config from the mirror
+        _up.restore_prefs_after_update()
+        with open(_up.CONFIG_FILE, "r", encoding="utf-8") as _f:
+            _conf = _f.read()
+        if 'mode = "auto"' not in _conf or "asked = true" not in _conf:
+            _bad.append("restore did not re-seed config: %r" % _conf[:120])
+
+        # (7) set_notes_shown records the version but keeps the mode
+        _p = _up.set_notes_shown("v9.9.9")
+        if _p.get("last_shown_notes_version") != "v9.9.9" or _p.get("mode") != "auto":
+            _bad.append("set_notes_shown -> %r" % (_p,))
+
+        # (8) bad mode raises BEFORE any write (the write-free 400 contract)
+        with open(_up.PREFS_MIRROR, "rb") as _f:
+            _m_before = _f.read()
+        with open(_up.CONFIG_FILE, "rb") as _f:
+            _c_before = _f.read()
+        try:
+            _up.set_update_prefs("bogus")
+            _bad.append("bad mode did not raise")
+        except _up.UpdaterError as _e:
+            if getattr(_e, "code", None) != "bad_mode":
+                _bad.append("bad-mode code=%r" % getattr(_e, "code", None))
+        with open(_up.PREFS_MIRROR, "rb") as _f:
+            _m_after = _f.read()
+        with open(_up.CONFIG_FILE, "rb") as _f:
+            _c_after = _f.read()
+        if _m_after != _m_before or _c_after != _c_before:
+            _bad.append("bad mode wrote to a store before raising")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, str(_unit_err)[:160]))
+    finally:
+        for _k, _v in _saved.items():
+            setattr(_up, _k, _v)
+        _shutil_tmp.rmtree(_td, ignore_errors=True)
+    _real_after = (_state_file_snapshot(_up.PREFS_MIRROR),
+                   _state_file_snapshot(_up.CONFIG_FILE))
+    if _real_after != _real_before:
+        _bad.append("live prefs stores were touched: %r -> %r"
+                    % (_real_before, _real_after))
+log_result("unit/update prefs", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "fresh=never-asked, dual-store write, newest-wins both ways, "
+           "clobber+restore, notes-shown keeps mode, bad_mode write-free; "
+           "live stores untouched")
+
+# -- 49b. release_notes_html (the what-changed modal) ----------------------
+print("  [49b] release_notes_html (XSS-safe allowlist markdown)")
+_bad = []
+if _up is None:
+    _bad.append("skipped - updater import failed: %s" % str(_up_import_err)[:150])
+else:
+    try:
+        _h = _up.release_notes_html("<script>alert(1)</script>")
+        if "<script" in _h.lower() or "&lt;script&gt;" not in _h:
+            _bad.append("script not escaped: %r" % _h[:120])
+        _h = _up.release_notes_html("## <img src=x onerror=alert(1)>")
+        if "<img" in _h.lower() or "<h3>" not in _h:
+            _bad.append("img not inert in heading: %r" % _h[:120])
+        _h = _up.release_notes_html("[x](javascript:alert(1))")
+        if "<a " in _h.lower() or 'href="javascript' in _h.lower():
+            _bad.append("javascript: link became an anchor: %r" % _h[:120])
+        _h = _up.release_notes_html("See [docs](https://example.com/a).")
+        if ('<a href="https://example.com/a" target="_blank" '
+                'rel="noopener noreferrer">docs</a>') not in _h:
+            _bad.append("https link wrong: %r" % _h[:160])
+        _h = _up.release_notes_html("## Title\n\n**bold** and `code`\n\n- one\n- two")
+        for _frag in ("<h3>Title</h3>", "<strong>bold</strong>", "<code>code</code>",
+                      "<ul>", "<li>one</li>", "<li>two</li>"):
+            if _frag not in _h:
+                _bad.append("missing %r" % _frag)
+        _h = _up.release_notes_html("```js\n**bold** [x](https://e.com)\n```")
+        if "<strong>" in _h or "<a " in _h.lower() or "**bold**" not in _h:
+            _bad.append("fence content not literal: %r" % _h[:160])
+        if not _up.release_notes_html("```\nunclosed").endswith("</code></pre>"):
+            _bad.append("unclosed fence not terminated")
+        if _up.release_notes_html("") != "" or _up.release_notes_html(None) != "":
+            _bad.append("empty/None did not render empty")
+    except Exception as _unit_err:
+        _bad.append("%s: %s" % (type(_unit_err).__name__, str(_unit_err)[:160]))
+log_result("unit/release notes renderer", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "script/img escaped, javascript: never linked, https+noopener, "
+           "structure renders, fences literal + auto-close, empty->''")
+
+# -- 49c. live card API (/api/update/*) -----------------------------------
+if not _server_reachable():
+    print("\n[SKIP] update-card live tests: no server on %s - start dashboard.py "
+          "and rerun" % BASE_URL)
+else:
+    print("\n[49c] live: /api/update/{status,apply-status,notes,preferences}")
+
+    def _upd_get(path, key=None, timeout=25):
+        _h = {"X-API-Key": key} if key else {}
+        _r = requests.get(BASE_URL + path, headers=_h, timeout=timeout)
+        try:
+            return _r.status_code, _r.json()
+        except Exception:
+            return _r.status_code, {}
+
+    def _upd_post(path, data, key=None, timeout=25):
+        _h = {"X-API-Key": key} if key else {}
+        _r = requests.post(BASE_URL + path, headers=_h, json=data, timeout=timeout)
+        try:
+            return _r.status_code, _r.json()
+        except Exception:
+            return _r.status_code, {}
+
+    _ukey = load_dashboard_key() or KEY
+    _STATUS_KEYS = ("mode", "install_mode", "local_version", "local_sha",
+                    "remote_version", "update_available", "behind_count",
+                    "commits", "impact", "notes_html", "stale", "error",
+                    "cache_age_s", "apply", "prefs", "checked_at")
+    _APPLY_KEYS = ("state", "pct", "message", "version", "exit_code",
+                   "rolled_back", "updated_at")
+    _PREFS_KEYS = ("mode", "asked", "last_shown_notes_version")
+
+    # (1) no key -> 401 (rate limit safe: followed by keyed calls)
+    try:
+        _st, _b = _upd_get("/api/update/status")
+        if _st == 401:
+            log_result("/api/update/status", "GET", 401, "PASS",
+                       "no key -> 401")
+        elif _st == 404:
+            log_result("/api/update/status", "GET", 404, "FAIL",
+                       "endpoint missing - restart dashboard")
+            print("      -> skipping the remaining update-card tests: "
+                  "restart dashboard.py and rerun")
+        else:
+            log_result("/api/update/status", "GET", _st, "FAIL",
+                       "no key expected 401, got %s" % _st)
+    except Exception as _e:
+        log_result("/api/update/status", "GET", "ERR", "FAIL",
+                   "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+        _st = 404   # connection dead - skip the rest
+
+    if _st not in (404, "ERR"):
+        # (2) keyed status contract
+        try:
+            _st, _b = _upd_get("/api/update/status", key=_ukey)
+            _bad = []
+            if _st != 200:
+                _bad.append("status=%s" % _st)
+            else:
+                for _k in _STATUS_KEYS:
+                    if _k not in _b:
+                        _bad.append("missing %s" % _k)
+                if not isinstance(_b.get("update_available"), bool):
+                    _bad.append("update_available=%r" % (_b.get("update_available"),))
+                _ap = _b.get("apply")
+                if not isinstance(_ap, dict):
+                    _bad.append("apply=%r" % (_ap,))
+                else:
+                    for _k in _APPLY_KEYS:
+                        if _k not in _ap:
+                            _bad.append("apply missing %s" % _k)
+                _pf = _b.get("prefs")
+                if not isinstance(_pf, dict):
+                    _bad.append("prefs=%r" % (_pf,))
+                else:
+                    for _k in _PREFS_KEYS:
+                        if _k not in _pf:
+                            _bad.append("prefs missing %s" % _k)
+            log_result("/api/update/status", "GET", _st,
+                       "FAIL" if _bad else "PASS",
+                       "; ".join(_bad)[:250] if _bad else
+                       "16-key contract + apply/prefs sub-dicts "
+                       "(install_mode=%s, update_available=%s)"
+                       % (_b.get("install_mode"), _b.get("update_available")))
+        except Exception as _e:
+            log_result("/api/update/status", "GET", "ERR", "FAIL",
+                       "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+
+        # (3) apply-status
+        try:
+            _st, _b = _upd_get("/api/update/apply-status", key=_ukey)
+            _bad = []
+            if _st != 200:
+                _bad.append("status=%s" % _st)
+            else:
+                for _k in _APPLY_KEYS:
+                    if _k not in _b:
+                        _bad.append("missing %s" % _k)
+            log_result("/api/update/apply-status", "GET", _st,
+                       "FAIL" if _bad else "PASS",
+                       "; ".join(_bad)[:250] if _bad else
+                       "7-key state contract (state=%s)" % _b.get("state"))
+        except Exception as _e:
+            log_result("/api/update/apply-status", "GET", "ERR", "FAIL",
+                       "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+
+        # (4) notes: 200 fail-soft contract
+        try:
+            _st, _b = _upd_get("/api/update/notes", key=_ukey)
+            _bad = []
+            if _st != 200:
+                _bad.append("status=%s" % _st)
+            elif not any(_k in _b for _k in ("notes_html", "error")):
+                _bad.append("no notes_html/error in %r" % (sorted(_b),))
+            log_result("/api/update/notes", "GET", _st,
+                       "FAIL" if _bad else "PASS",
+                       "; ".join(_bad)[:250] if _bad else
+                       "200 fail-soft (%s)" %
+                       ("error" if "error" in _b else "notes_html"))
+        except Exception as _e:
+            log_result("/api/update/notes", "GET", "ERR", "FAIL",
+                       "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+
+        # (5) preferences GET
+        try:
+            _st, _b = _upd_get("/api/update/preferences", key=_ukey)
+            _bad = []
+            if _st != 200:
+                _bad.append("status=%s" % _st)
+            else:
+                for _k in _PREFS_KEYS:
+                    if _k not in _b:
+                        _bad.append("missing %s" % _k)
+            log_result("/api/update/preferences", "GET", _st,
+                       "FAIL" if _bad else "PASS",
+                       "; ".join(_bad)[:250] if _bad else
+                       "mode=%r asked=%r" % (_b.get("mode"), _b.get("asked")))
+        except Exception as _e:
+            log_result("/api/update/preferences", "GET", "ERR", "FAIL",
+                       "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+
+        # (6) preferences POST bad mode -> 400, write-free
+        try:
+            _st0, _before = _upd_get("/api/update/preferences", key=_ukey)
+            _st, _b = _upd_post("/api/update/preferences", {"mode": "bogus"},
+                                key=_ukey)
+            _st1, _after = _upd_get("/api/update/preferences", key=_ukey)
+            _bad = []
+            if _st != 400:
+                _bad.append("expected 400, got %s" % _st)
+            if _b.get("ok") is not False or not _b.get("error"):
+                _bad.append("body=%r" % (_b,))
+            if _after != _before:
+                _bad.append("bad mode mutated prefs: %r -> %r" % (_before, _after))
+            log_result("/api/update/preferences", "POST", _st,
+                       "FAIL" if _bad else "PASS",
+                       "; ".join(_bad)[:250] if _bad else
+                       "400 ok:False + write-free (stores unchanged)")
+        except Exception as _e:
+            log_result("/api/update/preferences", "POST", "ERR", "FAIL",
+                       "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+
+        # (7) apply POST without key -> 401 (never starts anything)
+        try:
+            _st, _b = _upd_post("/api/update/apply", {"relaunch": False})
+            if _st == 401:
+                log_result("/api/update/apply", "POST", 401, "PASS",
+                           "no key -> 401 (nothing applied)")
+            else:
+                log_result("/api/update/apply", "POST", _st, "FAIL",
+                           "no key expected 401, got %s" % _st)
+        except Exception as _e:
+            log_result("/api/update/apply", "POST", "ERR", "FAIL",
+                       "%s: %s" % (type(_e).__name__, str(_e)[:120]))
+
+        # (8) staged-409: in_progress state -> keyed apply refused [DESTRUCTIVE]
+        if destructive(27, "/api/update/apply", "POST"):
+            _bad = []
+            _st = _b = None
+            _as_path = getattr(_up, "APPLY_STATE_FILE", None) \
+                if _up is not None else None
+            if not _as_path:
+                log_result("/api/update/apply", "POST", "-", "FAIL",
+                           "updater import failed - cannot locate APPLY_STATE_FILE")
+            else:
+                _existed = os.path.exists(_as_path)
+                _snap = None
+                if _existed:
+                    try:
+                        with open(_as_path, "rb") as _f:
+                            _snap = _f.read()
+                    except OSError as _e:
+                        _bad.append("snapshot failed: %s" % str(_e)[:100])
+                _staged = {"state": "installing", "pct": 42,
+                           "message": "suite staged-409 probe", "version": None,
+                           "exit_code": None, "rolled_back": False,
+                           "updated_at": int(time.time())}
+                _wrote = False
+                try:
+                    _cs, _cur = _upd_get("/api/update/apply-status", key=_ukey)
+                    if _cur.get("state") not in ("downloading", "verifying",
+                                                 "installing"):
+                        # stage a FRESH in-progress state (fresh updated_at so
+                        # apply_status's stale-reconcile leaves it alone)
+                        os.makedirs(os.path.dirname(_as_path), exist_ok=True)
+                        with open(_as_path, "w", encoding="utf-8") as _f:
+                            json.dump(_staged, _f)
+                        _wrote = True
+                    _cs, _conf = _upd_get("/api/update/apply-status", key=_ukey)
+                    if _conf.get("state") not in ("downloading", "verifying",
+                                                  "installing"):
+                        _bad.append("in_progress state not visible (got %r) - "
+                                    "POST withheld: it would START a real update"
+                                    % (_conf.get("state"),))
+                    else:
+                        _st, _b = _upd_post("/api/update/apply",
+                                            {"relaunch": False}, key=_ukey)
+                        if _st != 409:
+                            _bad.append("expected 409, got %s (%r)" % (_st, _b))
+                        elif _b.get("code") != "in_progress":
+                            _bad.append("409 code=%r" % (_b.get("code"),))
+                except Exception as _e:
+                    _bad.append("%s: %s" % (type(_e).__name__, str(_e)[:120]))
+                finally:
+                    try:
+                        if _wrote:
+                            if _snap is not None:
+                                with open(_as_path, "wb") as _f:
+                                    _f.write(_snap)
+                            elif os.path.exists(_as_path):
+                                os.remove(_as_path)
+                    except OSError as _e:
+                        _bad.append("restore failed: %s" % str(_e)[:100])
+                try:
+                    _cs, _rest = _upd_get("/api/update/apply-status", key=_ukey)
+                    _want = "idle"
+                    if _existed and _snap is not None:
+                        try:
+                            _want = json.loads(_snap.decode("utf-8")).get(
+                                "state") or "idle"
+                        except Exception:
+                            _want = None
+                    if _want is not None and _rest.get("state") != _want:
+                        _bad.append("restore mismatch: state=%r want=%r"
+                                    % (_rest.get("state"), _want))
+                except Exception as _e:
+                    _bad.append("restore confirm: %s" % str(_e)[:100])
+                log_result("/api/update/apply", "POST", _st if _st else "-",
+                           "FAIL" if _bad else "PASS",
+                           "; ".join(_bad)[:250] if _bad else
+                           "staged installing -> POST 409 in_progress; "
+                           "apply_state.json restored")
+
+# ====================================================================
+#  50. UPDATE CADENCE - hourly check task + elevated apply handoff
+#  50a asserts the shipped source (hard); 50b/50c query the LIVE tasks.
+#  The live cadence assertions stay informational until a 0.6.0-era
+#  install re-registers the tasks (the current registration predates
+#  the hourly graft), so a pre-0.6.0 machine is PASS-with-note, not FAIL.
+# ====================================================================
+print("\n[50] scheduled tasks: hourly update check + elevated apply handoff")
+
+# -- 50a. the idiom exists in every registrar (hard) -----------------------
+print("  [50a] source: hourly idiom + UpdateApply handoff in all registrars")
+_bad = []
+try:
+    _srcs = ("installer/post_install.ps1", "installer/install.ps1", "dashboard.py")
+    _need = ("-RepetitionInterval (New-TimeSpan -Hours 1)",
+             "New-TimeSpan -Days 9999", "NeoFace-UpdateApply", ".AddYears(1)",
+             "-RunLevel Highest")
+    for _rel in _srcs:
+        _p = os.path.join(_REPO_ROOT, _rel.replace("/", os.sep))
+        try:
+            with open(_p, "r", encoding="utf-8", errors="replace") as _f:
+                _text = _f.read()
+        except OSError as _e:
+            _bad.append("%s unreadable: %s" % (_rel, str(_e)[:80]))
+            continue
+        for _frag in _need:
+            if _frag not in _text:
+                _bad.append("%s missing %r" % (_rel, _frag))
+    _idx = os.path.join(_REPO_ROOT, "templates", "index.html")
+    try:
+        with open(_idx, "r", encoding="utf-8", errors="replace") as _f:
+            _text = _f.read()
+        if "3600e3" not in _text:
+            _bad.append("index.html missing hourly dashboard polling (3600e3)")
+        if "visibilitychange" not in _text:
+            _bad.append("index.html missing visibilitychange re-check")
+    except OSError as _e:
+        _bad.append("index.html unreadable: %s" % str(_e)[:80])
+except Exception as _unit_err:
+    _bad.append("%s: %s" % (type(_unit_err).__name__, str(_unit_err)[:160]))
+log_result("schtasks/hourly idiom (source)", "UNIT", "-", "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else
+           "PT1H + 9999d + UpdateApply(Highest, +1y) in all 3 registrars; "
+           "dashboard polls hourly + on visibilitychange")
+
+# -- 50b/50c. live task query (read-only) ----------------------------------
+_PS_CADENCE = (
+    "$ErrorActionPreference='SilentlyContinue'; "
+    "foreach ($n in @('NeoFace-UpdateCheck','NeoFace-UpdateApply')) { "
+    "$t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue; "
+    "if (-not $t) { Write-Output ('ABSENT|' + $n); continue } "
+    "$rl=''; try { $rl=[string]$t.Principal.RunLevel } catch {}; "
+    "Write-Output ('TASK|' + $n + '|RunLevel=' + $rl); "
+    "foreach ($tr in @($t.Triggers)) { "
+    "$cls=$tr.CimClass.CimClassName; $iv=''; $sb=''; "
+    "try { $iv=[string]$tr.Repetition.Interval } catch {}; "
+    "try { $sb=[string]$tr.StartBoundary } catch {}; "
+    "Write-Output ('TRIG|' + $n + '|' + $cls + '|Interval=' + $iv + "
+    "'|StartBoundary=' + $sb) } }")
+
+_tasks, _trigs, _cad_err = {}, {}, None
+try:
+    _cp = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_CADENCE],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=60, shell=False)
+    for _line in (_cp.stdout or "").splitlines():
+        _line = _line.strip()
+        if _line.startswith("ABSENT|"):
+            _tasks[_line.split("|", 1)[1]] = None
+        elif _line.startswith("TASK|"):
+            _parts = _line.split("|")
+            if len(_parts) >= 3:
+                _tasks[_parts[1]] = _parts[2].split("=", 1)[1]
+        elif _line.startswith("TRIG|"):
+            _parts = _line.split("|")
+            if len(_parts) >= 5:
+                _trigs.setdefault(_parts[1], []).append(
+                    (_parts[2], _parts[3].split("=", 1)[1],
+                     _parts[4].split("=", 1)[1]))
+    if not _tasks and (_cp.returncode or 0) != 0:
+        _cad_err = "powershell exit %s: %s" % ((_cp.returncode or 0),
+                                              (_cp.stderr or "")[:120])
+except Exception as _e:
+    _cad_err = "%s: %s" % (type(_e).__name__, str(_e)[:140])
+
+# -- 50b. UpdateCheck runs HOURLY (not once per logon) ---------------------
+_bad, _note = [], ""
+if _cad_err:
+    _bad.append("task query failed: %s" % _cad_err)
+elif "NeoFace-UpdateCheck" not in _tasks:
+    _note = "task not registered here - see row [40] for presence"
+elif any(iv == "PT1H" for _cls, iv, _sb in _trigs.get("NeoFace-UpdateCheck", [])):
+    _note = "PT1H repetition registered live"
+elif _tasks.get("NeoFace-UpdateApply") is not None:
+    _bad.append("UpdateApply exists (0.6.0-era install) but UpdateCheck has "
+                "no PT1H repetition - hourly graft missing")
+else:
+    _note = ("pre-0.6.0 registration (logon-only): hourly idiom verified in "
+             "source row [50a]; re-registers hourly on next install/setup")
+log_result("schtasks/NeoFace-UpdateCheck hourly", "GET", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else _note)
+
+# -- 50c. UpdateApply: standing-consent elevation, far-future trigger -------
+_bad, _note = [], ""
+if _cad_err:
+    _bad.append("task query failed: %s" % _cad_err)
+elif _tasks.get("NeoFace-UpdateApply") is None:
+    _note = ("not registered (pre-0.6.0 install): handoff verified in source "
+             "row [50a]; installer/post_install/dashboard-setup register it")
+else:
+    if _tasks.get("NeoFace-UpdateApply") != "Highest":
+        _bad.append("RunLevel=%r (want Highest - silent apply needs standing "
+                    "consent)" % _tasks.get("NeoFace-UpdateApply"))
+    _sb = next((sb for _c, _iv, sb in _trigs.get("NeoFace-UpdateApply", []) if sb),
+               "")
+    _m = re.search(r"(\d{4})-(\d{2})-(\d{2})", _sb)
+    if _m:
+        try:
+            _bdate = datetime(int(_m.group(1)), int(_m.group(2)),
+                              int(_m.group(3))).date()
+            if _bdate <= datetime.now().date():
+                _bad.append("Once trigger already due (%s) - elevated task "
+                            "could self-fire" % _sb[:10])
+            else:
+                _note = "RunLevel=Highest, far-future trigger %s" % _sb[:10]
+        except ValueError:
+            _note = "RunLevel=Highest; StartBoundary unparsable (%r)" % _sb[:24]
+    else:
+        _note = "RunLevel=Highest; no StartBoundary reported"
+log_result("schtasks/NeoFace-UpdateApply handoff", "GET", "-",
+           "FAIL" if _bad else "PASS",
+           "; ".join(_bad)[:250] if _bad else _note)
 
 # ====================================================================
 #  SUMMARY TABLE
