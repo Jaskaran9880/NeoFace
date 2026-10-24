@@ -1,6 +1,6 @@
 # Security notes
 
-## Current implementation (v0.4)
+## Current implementation (v0.6)
 
 - **Camera**: RGB only, no depth sensing. Passive anti-spoofing via SpoofGate (when model available).
 - **Gallery**: Face vectors only (128-d), DPAPI user-scope encrypted on disk.
@@ -8,6 +8,15 @@
 - **Named pipe**: `\\.\pipe\NeoFace` — message mode, created with default DACL.
 - **CP DLL**: Registered via COM + regsvr32, runs in LogonUI context. Tile logo (`icon.bmp`) is loaded from `C:\Program Files\NeoFace\` via `GetBitmapValue` (bitmap only, no code path).
 - **Daemon**: Python scheduled task, Interactive logon type, runs in user session (boot-time variant `deploy_boot.ps1` registers SYSTEM - see below).
+
+## Update pipeline (v0.6)
+
+- **Integrity**: the `NeoFace-Setup.exe` asset is SHA256-pinned against the SHA published in the GitHub release notes (fence first, bare fallback); a mismatch deletes the staged `.part` file and never executes anything.
+- **Origin allow-list**: release/download URLs are restricted to the GitHub releases origin, and the allow-list is re-verified at apply time (not just at check time).
+- **Staged apply with rollback**: downloads land in `.part` and are atomically renamed only after verification; apply progress is tracked in `apply_state.json` with rollback to `failed` on error and stale in-progress states reconciled after 30 minutes.
+- **Double-apply guard**: `POST /api/update/apply` returns `409 in_progress` while an apply is under way (state-file backed), so a second click can never start a concurrent installer.
+- **Elevation**: the elevated apply handoff runs through the `NeoFace-UpdateApply` scheduled task (`-RunLevel Highest`) with a far-future (`+1 year`) trigger — elevation is standing consent registered at install time; the task never self-fires.
+- **Renderer**: the post-update what-changed modal renders release notes through an allowlist markdown renderer — raw HTML escaped, `javascript:` URLs never become links, https links get `rel="noopener noreferrer"`.
 
 ## Threat model
 

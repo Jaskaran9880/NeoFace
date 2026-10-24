@@ -48,7 +48,7 @@ ALLOWED_DOWNLOAD_HOSTS = ("github.com", "objects.githubusercontent.com",
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 VERSION_FILE = os.path.join(ROOT, "VERSION")
-FALLBACK_VERSION = "0.5.0"
+FALLBACK_VERSION = "0.6.0"
 
 # ProgramData is preserved by the installer across updates and uninstalls
 # (installer.iss UninstallDelete) and is user-writable, so it is the right

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 - 2026-10-24
+- Full auto-update pipeline: new `face_unlock/updater.py` — version parse (`git describe` + semver), remote check (primary `git fetch`, GitHub API fallback with 5-10 min cache, origin allow-list re-verified), SHA256-pinned `NeoFace-Setup.exe` download (staged as `.part`, atomic rename, mismatch never finalizes), and apply via the installer with a git-clone dispatch path; progress tracked in `apply_state.json` (`downloading`/`verifying`/`installing` + rollback + stale-reconcile to `failed`)
+- One-click **Update Now** in the dashboard: `POST /api/update/apply` (409 `in_progress` double-apply guard), live `GET /api/update/apply-status` progress (% + state), relaunch handling; every update endpoint is API-key protected and validates the key before the rate limit counts it
+- What-changed modal after an update: `GET /api/update/notes` renders the released notes through a new allowlist markdown renderer (`release_notes_html`) — raw HTML escaped, `javascript:` never linked, https links `noopener noreferrer`, fences literal + auto-closed
+- One-time update preference prompt (auto-apply vs. notify): dual-store prefs (`ProgramData` mirror + `config.toml` `[update]`), newest-wins resolution, survives installer clobber via `restore_prefs_after_update`, `set_update_prefs` writes surgically and rejects bad modes before any write (`400 ok:false` + write-free); opt-out per version and notes-shown dedupe included
+- Logon notifier (`tools/update_notifier.py`) now supports auto-apply: gate matrix (git dedupe, install-mode fetch/tag/version gates), frozen public API for the frozen build; state round-trips and corrupt/missing state falls back to defaults
+- Update cadence: `NeoFace-UpdateCheck` grafted from logon-only to **hourly** (`-RepetitionInterval (New-TimeSpan -Hours 1)`, 9999d / `AddYears(1)` end boundary) in all three registrars (`installer/post_install.ps1`, `installer/install.ps1`, dashboard setup); new `NeoFace-UpdateApply` task registered with `-RunLevel Highest` and a far-future trigger = standing consent for the elevated apply handoff (never self-fires); dashboard polls hourly and re-checks on `visibilitychange`
+- Tests: unit rows [35]-[55] — notifier contract/freeze, updater import purity, semver/sha/asset/mode helpers, `verify_sha256` matrix, download staging, `prepare_apply` gate matrix, `_auto_apply` 18-case matrix, prefs round-trip (temp stores, live stores proven untouched), renderer XSS matrix, cadence source idiom + live `schtasks` queries; destructive `[27]` staged-409 probe (state file backed up + restored)
+- `FALLBACK_VERSION` bumped to `0.6.0` (`dashboard.py`, `face_unlock/updater.py`)
+
 ## 0.5.0 - 2026-10-21
 - One-click installer: `NeoFace-Setup.exe` (~67 MB, GitHub Releases) — no Python, Git, or compiler needed on the target PC; app installs to LocalAppData with a bundled Python 3.13 runtime, CP DLL to Program Files
 - First-run console wizard (`tools/setup_wizard.py`): Windows password vault (DPAPI), live-camera face enrollment (photos folder still supported), and a test scan — re-runnable anytime from Start Menu → NeoFace → Setup Wizard
