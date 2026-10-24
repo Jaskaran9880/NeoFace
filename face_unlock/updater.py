@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -604,3 +605,292 @@ def download_latest(release=None, dest_dir=UPDATES_DIR, progress_cb=None,
     return {"path": final_path, "sha256": expected,
             "size": os.path.getsize(final_path), "tag": release.get("tag"),
             "reused": False}
+
+
+# --- apply state (file-based, survives the dashboard dying mid-update) ----
+APPLY_STALE_S = 30 * 60      # "installing" older than this = crashed -> failed
+
+
+def _write_json_atomic(path, data):
+    """Write JSON atomically: temp next to it, then os.replace()."""
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def read_apply_state():
+    """apply_state.json -> dict; missing/corrupt -> idle defaults."""
+    defaults = {"state": "idle", "pct": None, "message": "", "version": None,
+                "exit_code": None, "rolled_back": False, "updated_at": 0}
+    try:
+        with open(APPLY_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            defaults.update({k: data.get(k) for k in defaults})
+            return defaults
+    except Exception:
+        pass
+    return defaults
+
+
+def write_apply_state(state, message="", version=None, exit_code=None,
+                      rolled_back=None, pct=None):
+    """Merge-write apply_state.json with an updated_at stamp (atomic)."""
+    data = read_apply_state()
+    data.update({"state": state, "message": message,
+                 "updated_at": int(time.time())})
+    if version is not None:
+        data["version"] = version
+    if exit_code is not None:
+        data["exit_code"] = exit_code
+    if rolled_back is not None:
+        data["rolled_back"] = bool(rolled_back)
+    if pct is not None:
+        data["pct"] = pct
+    _write_json_atomic(APPLY_STATE_FILE, data)
+    return data
+
+
+def apply_status():
+    """Cross-process apply state, with crashed-install reconciliation.
+
+    The dashboard reads this after being killed by its own update: the
+    elevated script wrote the state before the process died, so a relaunched
+    dashboard still sees "done" and can show the release notes once.
+    """
+    state = read_apply_state()
+    if (state.get("state") in ("installing", "verifying", "downloading")
+            and state.get("updated_at")
+            and time.time() - state["updated_at"] > APPLY_STALE_S):
+        state = write_apply_state("failed",
+                                  message="Update interrupted (process died) - "
+                                          "will retry on the next check.")
+        state = read_apply_state()
+    progress = get_progress()
+    if state.get("state") in (None, "", "idle") and progress.get("phase"):
+        return {"state": progress["phase"], "pct": progress.get("pct"),
+                "message": progress.get("message", ""),
+                "version": state.get("version"), "exit_code": None,
+                "rolled_back": False, "updated_at": state.get("updated_at")}
+    return state
+
+
+def _task_exists(name):
+    """True when the scheduled task is registered (schtasks query, no admin)."""
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", name],
+            capture_output=True, timeout=10, shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+# --- apply engines ---------------------------------------------------------
+def apply_via_git(progress_cb=None):
+    """git pull --ff-only for dev clones; origin allow-list re-verified."""
+    check_origin()                       # re-verify right before touching the network
+    if not _git_exe():
+        raise UpdaterError("no_git", "Git is not installed - cannot pull.")
+    ok, out, _ = _git(["status", "--porcelain", "--untracked-files=no"], timeout=10)
+    if ok and out.strip():
+        raise UpdaterError("dirty",
+                           "Local changes present - commit or stash them first.")
+    ok, out, _ = _git(["rev-parse", "--abbrev-ref", "HEAD"], timeout=10)
+    branch = (out or "").strip() if ok else ""
+    if not branch or branch == "HEAD":    # detached HEAD -> default branch
+        branch = "main"
+    write_apply_state("installing", message="git pull --ff-only origin %s" % branch)
+    ok, out, err = _git(["pull", "--ff-only", "origin", branch], timeout=120)
+    if not ok:
+        detail = ((err or out or "").strip())[-300:]
+        write_apply_state("failed", message="git pull failed: %s" % detail)
+        raise UpdaterError("pull_failed", "git pull --ff-only failed: %s"
+                           % (detail or "unknown error"))
+    if progress_cb:
+        progress_cb(1, 1)
+    ok, out, _ = _git(["describe", "--tags", "--always"], timeout=10)
+    version = (out or "").strip() or None
+    write_apply_state("done", message="Pulled %s" % version, version=version)
+    return {"ok": True, "method": "git", "version": version,
+            "message": "Updated to %s. Restart the daemon to use it." % version}
+
+
+def _start_apply_task():
+    """Start the pre-registered elevated NeoFace-UpdateApply task (no UAC)."""
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command",
+             'Start-ScheduledTask -TaskName "NeoFace-UpdateApply"'],
+            capture_output=True, timeout=30, shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+def _runas_apply_script(relaunch_dashboard):
+    """Fallback: UAC-prompted elevation of tools/apply_update.ps1.
+
+    Raises UpdaterError('uac_declined') when the prompt is cancelled -
+    the interactive caller surfaces that as "one UAC confirmation is needed".
+    """
+    script = os.path.join(ROOT, "tools", "apply_update.ps1")
+    if not os.path.isfile(script):
+        raise UpdaterError("task_missing",
+                           "No apply script and no NeoFace-UpdateApply task - "
+                           "re-run the installer to repair the update system.")
+    args = ('-NoProfile -ExecutionPolicy Bypass -File "%s" -FromDashboard' % script)
+    if relaunch_dashboard:
+        args += " -RelaunchDashboard"
+    command = ("Start-Process powershell.exe -Verb RunAs -Wait "
+               "-ArgumentList '%s'" % args.replace("'", "''"))
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", command],
+            capture_output=True, timeout=600, shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise UpdaterError("uac_declined", "Elevation failed: %s" % exc)
+    stderr = (result.stderr or "").lower()
+    if result.returncode != 0:
+        if "canceled by the user" in stderr or "cancelled by the user" in stderr:
+            raise UpdaterError("uac_declined",
+                               "Elevation was declined - the update was not applied.")
+        raise UpdaterError("apply_failed",
+                           "Elevated apply failed: %s"
+                           % ((result.stderr or result.stdout or "").strip()[-200:]))
+    return {"ok": True, "method": "runas"}
+
+
+def prepare_apply(interactive=False, relaunch_dashboard=False, progress_cb=None):
+    """Full apply orchestration; mode selects the engine.
+
+    git      -> synchronous git pull (no elevation).
+    installed-> fetch fresh release, download+verify the setup exe, stage
+                pending.json, then hand off: pre-registered Highest task
+                first (silent, no UAC - registered while the installer ran
+                elevated), UAC runas fallback for interactive callers.
+
+    Raises UpdaterError: already_current / in_progress / no_asset / no_hash /
+    hash_mismatch / download_failed / uac_declined / task_missing / dirty.
+    """
+    mode = detect_install_mode()
+    if mode == "git":
+        return apply_via_git(progress_cb)
+
+    state = read_apply_state()
+    if (state.get("state") in ("downloading", "verifying", "installing")
+            and state.get("updated_at")
+            and time.time() - state["updated_at"] < APPLY_STALE_S):
+        raise UpdaterError("in_progress", "An update is already being applied.")
+
+    release = fetch_latest_release(force=True)   # always fresh at apply time
+    local = local_version()
+    if not is_newer(release.get("tag"), local.get("version")):
+        raise UpdaterError("already_current",
+                           "Already on %s - nothing to update." % local.get("version"))
+
+    download = download_latest(release, progress_cb=progress_cb)
+    pending = {"setup": download["path"], "sha256": download["sha256"],
+               "tag": release.get("tag"), "relaunch": bool(relaunch_dashboard),
+               "staged_at": int(time.time())}
+    if not _write_json_atomic(PENDING_FILE, pending):
+        raise UpdaterError("apply_failed", "Could not stage the update request.")
+
+    if _task_exists("NeoFace-UpdateApply"):
+        if not _start_apply_task():
+            raise UpdaterError("apply_failed", "Could not start the update task.")
+        write_apply_state("installing",
+                          message="Applying %s..." % release.get("tag"),
+                          version=release.get("tag"))
+        return {"ok": True, "method": "task", "tag": release.get("tag"),
+                "message": "Applying %s - the screen may flicker once."
+                           % release.get("tag")}
+
+    if not interactive:
+        raise UpdaterError("task_missing",
+                           "The NeoFace-UpdateApply task is missing - automatic "
+                           "apply is unavailable until the installer is re-run.")
+    result = _runas_apply_script(relaunch_dashboard)
+    result.update({"tag": release.get("tag")})
+    return result
+
+
+# --- CLI (used by tools/apply_update.ps1 inside the elevated context) -----
+def main(argv=None):
+    """CLI entry points; every output is one JSON object on stdout.
+
+    --apply-status                     print apply_status()
+    --verify --setup <path> [--tag t]  re-fetch the release over TLS and check
+                                       the staged exe's hash against the
+                                       published SHA256 (exit 0/1). This runs
+                                       INSIDE the elevated apply context - the
+                                       one place that must never trust a file.
+    --stage-download                   fetch + download + verify (exit 0/1)
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    try:
+        if "--apply-status" in args:
+            print(json.dumps(apply_status()))
+            return 0
+        if "--verify" in args:
+            setup = None
+            tag = None
+            i = 0
+            while i < len(args):
+                if args[i] == "--setup" and i + 1 < len(args):
+                    setup = args[i + 1]
+                    i += 2
+                elif args[i] == "--tag" and i + 1 < len(args):
+                    tag = args[i + 1]
+                    i += 2
+                else:
+                    i += 1
+            release = fetch_latest_release(force=True, timeout=15)
+            expected = release.get("sha256")
+            if tag and release.get("tag") != tag:
+                print(json.dumps({"ok": False, "reason": "tag_mismatch",
+                                  "latest": release.get("tag"), "wanted": tag}))
+                return 1
+            ok = bool(setup and expected and os.path.isfile(setup)
+                      and verify_sha256(setup, expected))
+            print(json.dumps({"ok": ok,
+                              "reason": None if ok else "hash_mismatch_or_missing",
+                              "tag": release.get("tag")}))
+            return 0 if ok else 1
+        if "--stage-download" in args:
+            download = download_latest()
+            print(json.dumps({"ok": True, "path": download["path"],
+                              "tag": download["tag"]}))
+            return 0
+    except UpdaterError as exc:
+        print(json.dumps({"ok": False, "reason": exc.code,
+                          "message": exc.message}))
+        return 1
+    except Exception as exc:
+        print(json.dumps({"ok": False, "reason": "unexpected",
+                          "message": "%s: %s" % (type(exc).__name__, exc)}))
+        return 1
+    print("usage: -m face_unlock.updater --apply-status | "
+          "--verify --setup <path> [--tag <tag>] | --stage-download")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
